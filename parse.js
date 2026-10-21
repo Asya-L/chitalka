@@ -4,10 +4,26 @@
   const BLOCK = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'BLOCKQUOTE', 'DIV', 'SECTION', 'ARTICLE', 'PRE', 'TD', 'DD', 'DT', 'FIGCAPTION', 'ASIDE', 'HEADER', 'FOOTER', 'TABLE', 'UL', 'OL', 'DL', 'TR', 'FIGURE', 'MAIN', 'NAV']);
   const clean = s => String(s || '').replace(/[­​﻿]/g, '').replace(/\s+/g, ' ').trim();
 
+  // Кодировка файла без пометки: UTF-8, иначе китайские GB18030/Big5 (только если текст в основном иероглифы),
+  // иначе выбор между польской Windows-1250 и кириллической Windows-1251 по тому, какие буквы получаются.
   function decodeText(u8) {
-    if (u8[0] === 0xef && u8[1] === 0xbb && u8[2] === 0xbf) u8 = u8.subarray(3);
-    try { return new TextDecoder('utf-8', { fatal: true }).decode(u8); }
-    catch (e) { return new TextDecoder('windows-1251').decode(u8); }
+    if (u8[0] === 0xef && u8[1] === 0xbb && u8[2] === 0xbf) return new TextDecoder('utf-8').decode(u8.subarray(3));
+    if (u8[0] === 0xff && u8[1] === 0xfe) return new TextDecoder('utf-16le').decode(u8.subarray(2));
+    if (u8[0] === 0xfe && u8[1] === 0xff) return new TextDecoder('utf-16be').decode(u8.subarray(2));
+    try { return new TextDecoder('utf-8', { fatal: true }).decode(u8); } catch (e) { }
+    const sample = u8.subarray(0, 200000);
+    for (const enc of ['gb18030', 'big5']) {
+      try {
+        const t = new TextDecoder(enc, { fatal: true }).decode(sample);
+        const nonAscii = (t.match(/[^\x00-\x7f]/g) || []).length;
+        const han = (t.match(/[\u3400-\u9fff]/g) || []).length;
+        if (nonAscii && han / nonAscii > 0.8) return new TextDecoder(enc).decode(u8);
+      } catch (e) { }
+    }
+    const pl = new TextDecoder('windows-1250').decode(sample), ru = new TextDecoder('windows-1251').decode(sample);
+    const plScore = (pl.match(/[ąćęłńóśźżĄĆĘŁŃÓŚŹŻ]/g) || []).length;
+    const ruScore = (ru.match(/[а-яё]{3,}/gi) || []).length * 3;
+    return new TextDecoder(ruScore > plScore ? 'windows-1251' : 'windows-1250').decode(u8);
   }
   function decodeXml(u8) {
     const head = new TextDecoder('latin1').decode(u8.subarray(0, 300));

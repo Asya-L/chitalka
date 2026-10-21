@@ -45,11 +45,16 @@ const idb = (() => {
     r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
   }));
   const tx = async (store, mode, fn) => { const d = await open(); return new Promise((res, rej) => { const t = d.transaction(store, mode); const r = fn(t.objectStore(store)); t.oncomplete = () => res(r && r.result); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error); }); };
+  // если IndexedDB недоступна (приватный режим, запрет браузера) — храним в памяти до закрытия вкладки
+  const mem = { kv: new Map(), books: new Map(), tr: new Map() };
+  let noIdb = typeof indexedDB === 'undefined' || !indexedDB;
+  const safe = async (fn, fallback) => { if (!noIdb) { try { return await fn(); } catch (e) { noIdb = true; } } return fallback(); };
   return {
-    get: (s, k) => tx(s, 'readonly', st => st.get(k)),
-    put: (s, k, v) => tx(s, 'readwrite', st => st.put(v, k)),
-    del: (s, k) => tx(s, 'readwrite', st => st.delete(k)),
-    clear: s => tx(s, 'readwrite', st => st.clear())
+    get: (s, k) => safe(() => tx(s, 'readonly', st => st.get(k)), () => mem[s].get(k)),
+    put: (s, k, v) => safe(() => tx(s, 'readwrite', st => st.put(v, k)), () => { mem[s].set(k, v); }),
+    del: (s, k) => safe(() => tx(s, 'readwrite', st => st.delete(k)), () => { mem[s].delete(k); }),
+    clear: s => safe(() => tx(s, 'readwrite', st => st.clear()), () => { mem[s].clear(); }),
+    get volatile() { return noIdb; }
   };
 })();
 const DEV = (() => { let d = null; try { d = localStorage.getItem('mezhdu-dev'); if (!d) { d = Math.random().toString(36).slice(2, 10); localStorage.setItem('mezhdu-dev', d); } } catch (e) { d = 'x' + Math.random().toString(36).slice(2, 8); } return d; })();
@@ -675,9 +680,19 @@ function openWord(o) {
 }
 async function runLookup(o, force) {
   o.state = 'loading'; o.err = ''; if (CUR === o) updateSheet(wordHTML(o));
-  try { o.data = await lookup(o, force); o.state = 'ok'; o.fromSaved = false; }
+  try { o.data = await lookup(o, force); o.state = 'ok'; o.fromSaved = false; linkForm(o); }
   catch (e) { o.state = 'err'; o.err = navigator.onLine === false ? 'Нет интернета. Перевод появится, когда вернётся связь; сохранённые слова доступны и без неё.' : 'Не получилось перевести: ни Claude, ни запасные сервисы перевода не ответили. Попробуй ещё раз чуть позже.'; }
   if (CUR === o) updateSheet(wordHTML(o));
+}
+// другая форма уже сохранённого слова: привязываем её к карточке (подсветка, ещё одно предложение)
+function linkForm(o) {
+  const w = findWord(o.lang, o.term, o.data && o.data.lemma);
+  if (!w || w.del) return;
+  const k = keyOf(o.term, o.lang);
+  if ((w.forms || []).includes(k)) return;
+  (w.forms = w.forms || []).push(k);
+  if (o.ctx && !(w.ctxs || []).some(c => c.s === o.ctx)) { const b = S.books[o.book]; (w.ctxs = w.ctxs || []).unshift({ s: o.ctx, f: o.term, tr: '', b: b ? b.title : '' }); w.ctxs = w.ctxs.slice(0, 5); }
+  w.u = now(); save(); refreshHighlights();
 }
 function wordHTML(o) {
   const L = o.lang; const d = o.data || {};

@@ -33,7 +33,7 @@ CDN = {
 
 # ---------------------------------------------------------------- mock Claude
 class Claude:
-    def __init__(self): self.calls = []; self.fail = None
+    def __init__(self): self.calls = []; self.fail = None; self.garbage = False
     async def handle(self, route):
         req = route.request
         h = req.headers
@@ -43,17 +43,19 @@ class Claude:
             return await route.fulfill(status=self.fail, content_type='application/json', body=json.dumps({'error': {'message': 'invalid x-api-key'}}))
         assert h.get('x-api-key') and h.get('anthropic-dangerous-direct-browser-access') == 'true', 'headers'
         prompt = body['messages'][0]['content']
-        if prompt.startswith('Reply with: ok'): txt = 'ok'
+        if self.garbage and not prompt.startswith('Reply with'): txt = 'Извините, я не могу.'
+        elif prompt.startswith('Reply with: ok'): txt = 'ok'
         elif prompt.startswith('Translate this sentence'): txt = 'Старый часовщик каждое утро заводил латунные шестерёнки.'
         else:
             term = re.search(r'tapped this (?:word|phrase): «(.+?)»', prompt).group(1)
             zh = 'Chinese' in prompt
-            txt = 'Вот ответ:\n' + json.dumps({'lemma': term.lower() if not zh else term, 'pos': 'сущ.', 'tr': 'перевод:' + term, 'alt': 'ещё значение', 'note': 'пояснение формы', 'pinyin': 'shū' if zh else '', 'hsk': '1' if zh else ''}, ensure_ascii=False)
+            LEM = {'mgłę': 'mgła', 'mgle': 'mgła'}
+            txt = 'Вот ответ:\n' + json.dumps({'lemma': LEM.get(term, term.lower()) if not zh else term, 'pos': 'сущ.', 'tr': 'перевод:' + term, 'alt': 'ещё значение', 'note': 'пояснение формы', 'pinyin': 'shū' if zh else '', 'hsk': '1' if zh else ''}, ensure_ascii=False)
         await route.fulfill(status=200, content_type='application/json', body=json.dumps({'content': [{'type': 'text', 'text': txt}]}))
 
 # ---------------------------------------------------------------- mock free translators
 class Free:
-    def __init__(self): self.google_down = False; self.calls = []
+    def __init__(self): self.google_down = False; self.mm_down = False; self.calls = []
     async def google(self, route):
         q = parse_qs(urlparse(route.request.url).query); self.calls.append(('g', q['q'][0]))
         if self.google_down: return await route.fulfill(status=429, body='')
@@ -62,6 +64,7 @@ class Free:
         await route.fulfill(status=200, content_type='application/json', headers={'access-control-allow-origin': '*'}, body=json.dumps(body, ensure_ascii=False))
     async def mymemory(self, route):
         q = parse_qs(urlparse(route.request.url).query); self.calls.append(('m', q['q'][0]))
+        if self.mm_down: return await route.fulfill(status=503, body='')
         await route.fulfill(status=200, content_type='application/json', headers={'access-control-allow-origin': '*'}, body=json.dumps({'responseData': {'translatedText': 'мм:' + q['q'][0]}, 'quotaFinished': False}, ensure_ascii=False))
     async def wikt(self, route):
         w = urlparse(route.request.url).path.rsplit('/', 1)[1]
@@ -503,7 +506,9 @@ async def c11_native_schedule(c):
     assert last['info']['pl']['book'] == 'Droga przez mgłę', last['info']
     await c.check()
 
-CASES = [c01_empty_and_import, c02_read_tap_save, c03_chinese, c04_review, c05_errors_and_settings, c06_desktop, c07_sync_two_devices, c08_fallback, c09_eink_android, c10_schedule_push, c11_native_schedule]
+exec(open(os.path.join(T, 'plan_cases.py'), encoding='utf-8').read())
+
+CASES = [c01_empty_and_import, c02_read_tap_save, c03_chinese, c04_review, c05_errors_and_settings, c06_desktop, c07_sync_two_devices, c08_fallback, c09_eink_android, c10_schedule_push, c11_native_schedule] + PLAN_CASES
 
 async def main():
     sel = sys.argv[1:]
@@ -514,7 +519,7 @@ async def main():
         for case in CASES:
             name = case.__name__
             if sel and not any(name.startswith(s) for s in sel): continue
-            c = Ctx(pw, browser, url, Claude(), Backend(), sync=name.startswith(('c07', 'c10')))
+            c = Ctx(pw, browser, url, Claude(), Backend(), sync=name.startswith(('c07', 'c10', 'f11')))
             try:
                 await asyncio.wait_for(case(c), 90); ok += 1; print('PASS', name)
             except Exception as e:
