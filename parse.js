@@ -1,4 +1,4 @@
-// Разбор книг: EPUB, FB2 (в т.ч. .fb2.zip) и TXT.
+// Разбор книг: EPUB, FB2 (в т.ч. .fb2.zip), TXT и PDF.
 // Результат: {title, author, lang, chapters:[{t:'Название', p:['абзац', ...]}]}
 (function () {
   const BLOCK = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'BLOCKQUOTE', 'DIV', 'SECTION', 'ARTICLE', 'PRE', 'TD', 'DD', 'DT', 'FIGCAPTION', 'ASIDE', 'HEADER', 'FOOTER', 'TABLE', 'UL', 'OL', 'DL', 'TR', 'FIGURE', 'MAIN', 'NAV']);
@@ -302,6 +302,10 @@
     let paras;
     if (blank > lines.length / 8) paras = str.split(/\n\s*\n+/).map(b => clean(b.replace(/\n/g, ' '))).filter(Boolean);
     else paras = lines.map(clean).filter(Boolean);
+    return { title: String(name || '').replace(/\.(txt)$/i, '').replace(/[_]+/g, ' '), author: '', lang: '', chapters: chapterize(paras) };
+  }
+  // Деление сплошного текста на главы: по заголовкам «Глава…/Chapter…/第…章», иначе кусками по ~2500 слов
+  function chapterize(paras) {
     const heads = paras.map((p, i) => (p.length < 90 && HEAD_RE.test(p)) ? i : -1).filter(i => i >= 0);
     const chapters = [];
     if (heads.length >= 2) {
@@ -312,13 +316,135 @@
         chapters.push({ t: paras[h], p: p.length ? p : [paras[h]] });
       });
     } else {
-      const isZh = (str.slice(0, 5000).match(/[㐀-鿿]/g) || []).length > 500;
+      const isZh = (paras.slice(0, 100).join('').match(/[㐀-鿿]/g) || []).length > 500;
       const limit = isZh ? 5000 : 2500; let cur = [], n = 0;
       const size = p => isZh ? p.length : p.split(/\s+/).length;
       for (const p of paras) { cur.push(p); n += size(p); if (n >= limit) { chapters.push({ t: '', p: cur }); cur = []; n = 0; } }
       if (cur.length) chapters.push({ t: '', p: cur });
     }
-    return { title: String(name || '').replace(/\.(txt)$/i, '').replace(/[_]+/g, ' '), author: '', lang: '', chapters };
+    return chapters;
+  }
+
+  // ---------- PDF ----------
+  // pdf.js подгружается при первом PDF. Текст собирается в строки по координатам, строки — в абзацы;
+  // колонтитулы и номера страниц убираются, переносы со знаком «-» склеиваются, главы — по оглавлению PDF.
+  const PDFJS = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/';
+  let pdfLoading = null;
+  function loadPdfJs() {
+    if (window.pdfjsLib && window.pdfjsLib.GlobalWorkerOptions.workerSrc) return Promise.resolve(window.pdfjsLib);
+    return pdfLoading || (pdfLoading = new Promise((res, rej) => {
+      const fail = () => { pdfLoading = null; rej(new Error('Не загрузился модуль чтения PDF — при первом открытии PDF нужен интернет.')); };
+      const sc = document.createElement('script'); sc.src = PDFJS + 'pdf.min.js';
+      sc.onload = async () => {
+        try {
+          // воркер с другого домена запускаем через blob — так он работает и из офлайн-кэша
+          const r = await fetch(PDFJS + 'pdf.worker.min.js'); if (!r.ok) throw new Error();
+          window.pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(new Blob([await r.text()], { type: 'application/javascript' }));
+          res(window.pdfjsLib);
+        } catch (e) { fail(); }
+      };
+      sc.onerror = fail;
+      document.head.appendChild(sc);
+    }));
+  }
+  const SENT_END = /[.!?…»"”')\]。！？」』]$/;
+  const median = a => { const b = a.slice().sort((x, y) => x - y); return b.length ? b[Math.floor(b.length / 2)] : 0; };
+  async function parsePdf(buf, name) {
+    const lib = await loadPdfJs();
+    let pdf;
+    try { pdf = await lib.getDocument({ data: buf, isEvalSupported: false }).promise; }
+    catch (e) { throw new Error(/password/i.test(String(e && (e.name + ' ' + e.message))) ? 'PDF защищён паролем — сними защиту и добавь снова.' : 'Не получилось открыть PDF: файл повреждён.'); }
+    const lines = [];   // {t, x, y, h, right, pg}
+    for (let pg = 1; pg <= pdf.numPages; pg++) {
+      if (pg % 25 === 0 && typeof window.toast === 'function') window.toast('Читаю PDF: страница ' + pg + ' из ' + pdf.numPages);
+      const page = await pdf.getPage(pg);
+      const tc = await page.getTextContent();
+      const rows = [];
+      for (const it of tc.items) {
+        if (!it.str || !it.str.trim()) continue;
+        const x = it.transform[4], y = it.transform[5], h = Math.abs(it.transform[3]) || it.height || 10;
+        let r = rows.find(r => Math.abs(r.y - y) < Math.min(r.h, h) * 0.5);
+        if (!r) rows.push(r = { y, h, items: [] });
+        r.items.push({ x, w: it.width, s: it.str, h }); r.h = Math.max(r.h, h);
+      }
+      rows.sort((a, b) => b.y - a.y);
+      const pl = [];
+      for (const r of rows) {
+        r.items.sort((a, b) => a.x - b.x);
+        let t = '', end = null;
+        for (const it of r.items) {
+          if (end != null && it.x - end > it.h * 0.15 && !/\s$/.test(t) && !/^\s/.test(it.s)) t += ' ';
+          t += it.s; end = it.x + it.w;
+        }
+        t = t.replace(/\s+/g, ' ').trim();
+        if (t) pl.push({ t, x: r.items[0].x, y: r.y, h: r.h, right: end, pg });
+      }
+      lines.push(...pl);
+      page.cleanup();
+    }
+    if (lines.reduce((n, l) => n + l.t.length, 0) < 40) { pdf.destroy(); throw new Error('В этом PDF нет текста — похоже, это скан. Нужен PDF с текстовым слоем.'); }
+    // колонтитулы: первые и последние строки страниц, повторяющиеся на многих страницах (цифры не учитываем), и номера страниц
+    const norm = t => t.replace(/\d+/g, '#').toLowerCase();
+    const byPg = new Map(); for (const l of lines) { if (!byPg.has(l.pg)) byPg.set(l.pg, []); byPg.get(l.pg).push(l); }
+    const edgeCount = new Map();
+    for (const ls of byPg.values()) for (const l of new Set([ls[0], ls[ls.length - 1]])) edgeCount.set(norm(l.t), (edgeCount.get(norm(l.t)) || 0) + 1);
+    const nPg = byPg.size;
+    const deco = new Set();
+    for (const ls of byPg.values()) for (const l of new Set([ls[0], ls[1], ls[ls.length - 2], ls[ls.length - 1]])) {
+      if (!l) continue;
+      const edge = l === ls[0] || l === ls[ls.length - 1];
+      if (/^[\s\d\-–—|.]+$/.test(l.t) || /^[ivxlc]+$/i.test(l.t) || (edge && nPg >= 2 && (edgeCount.get(norm(l.t)) || 0) >= Math.max(2, nPg * 0.4))) deco.add(l);
+    }
+    const body = lines.filter(l => !deco.has(l));
+    const left = median(body.map(l => l.x)), right = median(body.map(l => l.right)), hh = median(body.map(l => l.h)) || 10;
+    const gaps = []; for (let i = 1; i < body.length; i++) if (body[i].pg === body[i - 1].pg) gaps.push(body[i - 1].y - body[i].y);
+    const lh = median(gaps.filter(g => g > 0)) || hh * 1.3;
+    const zh = (body.slice(0, 300).map(l => l.t).join('').match(/[㐀-鿿]/g) || []).length > 200;
+    const paras = [], paraPg = []; let cur = null;
+    for (let i = 0; i < body.length; i++) {
+      const l = body[i], prev = body[i - 1];
+      let brk = !prev;
+      if (prev) {
+        const samePg = prev.pg === l.pg;
+        const gap = samePg ? prev.y - l.y : lh;
+        const indent = l.x - left > hh * 0.9 && l.x - prev.x > hh * 0.9;
+        const short = prev.right < right - hh * 3;
+        const big = l.h > hh * 1.25 || prev.h > hh * 1.25;
+        brk = big || (samePg && gap > lh * 1.6) || indent || (short && SENT_END.test(prev.t));
+      }
+      if (brk) { if (cur) paras.push(cur); cur = l.t; paraPg.push(l.pg); continue; }
+      if (/\p{L}-$/u.test(cur) && /^\p{Ll}/u.test(l.t)) cur = cur.slice(0, -1) + l.t;   // перенос слова
+      else cur += (zh ? '' : ' ') + l.t;
+    }
+    if (cur) paras.push(cur);
+    // главы: по оглавлению PDF (верхний уровень), иначе по заголовкам в тексте
+    let chapters = null;
+    try {
+      const outline = await pdf.getOutline();
+      if (outline && outline.length >= 2) {
+        const marks = [];
+        for (const o of outline) {
+          let dest = o.dest; if (typeof dest === 'string') dest = await pdf.getDestination(dest);
+          if (!Array.isArray(dest)) continue;
+          marks.push({ t: clean(o.title), pg: (await pdf.getPageIndex(dest[0])) + 1 });
+        }
+        marks.sort((a, b) => a.pg - b.pg);
+        if (marks.length >= 2) {
+          chapters = [];
+          const pre = paras.filter((p, i) => paraPg[i] < marks[0].pg); if (pre.join('').length > 200) chapters.push({ t: '', p: pre });
+          marks.forEach((m, k) => {
+            const to = k + 1 < marks.length ? marks[k + 1].pg : Infinity;
+            let ps = paras.filter((p, i) => paraPg[i] >= m.pg && paraPg[i] < to);
+            if (ps.length > 1 && ps[0].toLowerCase() === m.t.toLowerCase()) ps = ps.slice(1);
+            if (ps.length) chapters.push({ t: m.t.slice(0, 120), p: ps });
+          });
+        }
+      }
+    } catch (e) { chapters = null; }
+    if (!chapters || !chapters.length) chapters = chapterize(paras);
+    let meta = {}; try { meta = (await pdf.getMetadata()).info || {}; } catch (e) { }
+    pdf.destroy();
+    return { title: clean(meta.Title) || String(name || '').replace(/\.pdf$/i, ''), author: clean(meta.Author), lang: '', chapters };
   }
 
   function countWords(chapters, lang) {
@@ -332,7 +458,9 @@
     const buf = new Uint8Array(await file.arrayBuffer());
     const isZip = buf[0] === 0x50 && buf[1] === 0x4b;
     let book;
-    if (/\.epub$/i.test(name) || (isZip && !/\.fb2\.zip$/i.test(name) && !/\.zip$/i.test(name))) book = await parseEpub(buf);
+    const isPdf = buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46;
+    if (isPdf || /\.pdf$/i.test(name)) book = await parsePdf(buf, name);
+    else if (/\.epub$/i.test(name) || (isZip && !/\.fb2\.zip$/i.test(name) && !/\.zip$/i.test(name))) book = await parseEpub(buf);
     else if (isZip) {
       const zip = await JSZip.loadAsync(buf);
       const f = Object.values(zip.files).find(x => /\.fb2$/i.test(x.name));
@@ -347,7 +475,7 @@
     const detected = detectLang(book.chapters);
     book.lang = detected === 'zh' || !book.lang ? detected : (book.lang === detected ? book.lang : detected);
     book.chapters.forEach((c, i) => { if (!c.t) c.t = (book.chapters.length > 1 ? 'Часть ' + (i + 1) : ''); });
-    if (!book.title) book.title = name.replace(/\.(epub|fb2|txt|zip)+$/i, '');
+    if (!book.title) book.title = name.replace(/\.(epub|fb2|txt|zip|pdf)+$/i, '');
     book.words = countWords(book.chapters, book.lang);
     return book;
   }

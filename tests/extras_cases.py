@@ -377,5 +377,32 @@ async def g01_auth_first(c):
     await p.wait_for_selector('.gate form[data-form="signin"]'); assert 'Ты вышла' in await p.inner_text('.gate')
     await c.check()
 
-EXTRAS_CASES = [g01_auth_first, x01_freq_levels, x02_cedict, x03_more_in_book, x04_paragraph, x05_quotes_bookmarks, x06_rich_text, x07_search_spread,
+async def p01_pdf(c):
+    """PDF: текст по абзацам, главы по оглавлению, без колонтитулов и номеров страниц, перенос склеен; скан — понятная ошибка."""
+    c.data = True; p = await c.open()
+    await p.set_input_files('#file', os.path.join(T, 'sample.pdf')); await p.wait_for_selector('form[data-form="import"]')
+    assert await p.input_value('input[name=title]') == 'Zegar w mgle' and await p.input_value('input[name=author]') == 'Anna Nowak'
+    assert 'aria-pressed="true">Польский' in await p.inner_html('.sheet') and '2 главы' in await p.inner_text('.sheet')
+    await c.shot('p01-import')
+    await p.click('form[data-form="import"] button[type=submit]'); await p.wait_for_selector('form[data-form="import"]', state='detached')
+    book = await p.evaluate("idb.get('books', Object.keys(S.books)[0])")
+    chs = book['chapters']
+    assert [ch['t'] for ch in chs] == ['Rozdział 1', 'Rozdział 2'], [ch['t'] for ch in chs]
+    for ch in chs:
+        assert len(ch['p']) == 14, [x[:40] for x in ch['p']]
+        for x in ch['p']:
+            assert 'Zegar w mgle' not in x and not re.search(r'(?<!\()\b\d+\b(?!\))', x), x
+            assert x.startswith(('Wiedźmin szedł', 'To była')), x
+    assert chs[0]['p'][0] == 'To była długa i bardzo spokojna noc w małej wiosce nad rzeką.', chs[0]['p'][0]
+    assert all(re.search(r'na skraju wsi \(\d+\)\.$', x) for x in chs[0]['p'][1:]), chs[0]['p'][1:]
+    await p.click('.continue [data-a="open"].btn'); await p.wait_for_selector('#rt w')
+    await p.locator('#rt w', has_text='spokojna').first.click(); await p.wait_for_selector('.w-tr'); await close_sheet(p)
+    await c.shot('p01-reader')
+    await p.go_back(); await p.wait_for_selector('.reader', state='detached')
+    # скан без текста
+    await p.set_input_files('#file', os.path.join(T, 'scan.pdf')); await p.wait_for_selector('text=похоже, это скан')
+    assert await p.evaluate('Object.keys(S.books).length') == 1
+    await c.check()
+
+EXTRAS_CASES = [p01_pdf, g01_auth_first, x01_freq_levels, x02_cedict, x03_more_in_book, x04_paragraph, x05_quotes_bookmarks, x06_rich_text, x07_search_spread,
                 x08_new_cards, x09_say_after, x10_mini_review, x11_hanzi, x12_tones, x13_pl_table, x14_goals_year, x15_merge, x16_offline_data]

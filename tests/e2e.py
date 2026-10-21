@@ -30,6 +30,8 @@ CDN = {
     'jszip': 'jszip/dist/jszip.min.js',
     'pinyin-pro': 'pinyin-pro/dist/index.js',
     'hanzi-writer@': 'hanzi-writer/dist/hanzi-writer.min.js',
+    'pdfjs-dist@3.11.174/build/pdf.min.js': 'pdfjs-dist/build/pdf.min.js',
+    'pdfjs-dist@3.11.174/build/pdf.worker.min.js': 'pdfjs-dist/build/pdf.worker.min.js',
 }
 
 # ---------------------------------------------------------------- mock Claude

@@ -437,12 +437,12 @@ const pctLabel = b => Math.floor((b.pct || 0) * 100) + '%';
 function renderShelf() {
   const books = liveBooks();
   if (books.length) setTimeout(refreshShelfCoverage, 50);
-  const fileInput = `<input type="file" id="file" class="sr" accept=".epub,.fb2,.txt,.zip,application/epub+zip,text/plain" multiple>`;
+  const fileInput = `<input type="file" id="file" class="sr" accept=".epub,.fb2,.txt,.zip,.pdf,application/epub+zip,application/pdf,text/plain" multiple>`;
   if (!books.length) return `${fileInput}<div class="empty">
       <div class="ill" aria-hidden="true">${I.book}</div>
       <h1>Учить язык, читая свои книги</h1>
       <p>Добавь книгу на английском, польском или китайском. Нажимаешь на незнакомое слово — видишь перевод именно в этом предложении и сохраняешь его. Потом слова повторяются карточками с тем же предложением из книги.</p>
-      <p class="hint">Подходят файлы EPUB, FB2 и TXT.</p>
+      <p class="hint">Подходят файлы EPUB, FB2, TXT и PDF.</p>
       <div class="row" style="justify-content:center;margin-top:18px"><button class="btn primary" data-a="add">${I.plus}Добавить книгу</button></div>
       ${!getKey() ? `<p class="hint" style="margin-top:22px">Перевод работает сразу. С ключом Claude API он будет точнее — с учётом предложения и с пояснениями. Ключ вписывается в <a href="#" data-a="tab" data-id="settings">настройках</a>.</p>` : ''}
     </div>`;
@@ -468,7 +468,7 @@ function renderShelf() {
     <div class="sec-h"><h2>Полка</h2>${langs.length > 1 ? `<div class="chips" role="group" aria-label="Язык">${['all', ...langs].map(l => `<button class="chip" data-a="filter" data-id="${l}" aria-pressed="${ui.filter === l}">${l === 'all' ? 'Все' : `<span class="lang-dot" style="--c:var(--${l})"></span>${LANGS[l].name}`}</button>`).join('')}</div>` : ''}</div>
     <div class="shelf">
       ${list.map(b => `<button class="book" data-a="open" data-id="${b.id}">${cover(b)}<div class="t" lang="${b.lang}">${esc(b.title)}</div><div class="a">${b.last ? pctLabel(b) : 'новая'}${covBadge(b.id) ? ' · ' + covBadge(b.id) : b.author ? ' · ' + esc(b.author) : ''}</div></button>`).join('')}
-      <div><button class="addbook" data-a="add">${I.plus}<span>Добавить книгу<br><span class="hint">EPUB, FB2, TXT</span></span></button></div>
+      <div><button class="addbook" data-a="add">${I.plus}<span>Добавить книгу<br><span class="hint">EPUB, FB2, TXT, PDF</span></span></button></div>
     </div>
   </section>
   ${goalsHTML()}${quotesShelfHTML()}`;
@@ -478,7 +478,7 @@ async function importFiles(files) {
     toast('Читаю «' + file.name + '»…');
     let book;
     try { book = await BookParse.parseBook(file); }
-    catch (e) { console.warn(e); toast(e && e.message && /[а-я]/i.test(e.message) ? e.message : 'Не получилось открыть «' + file.name + '». Проверь, что это EPUB, FB2 или TXT.'); continue; }
+    catch (e) { console.warn(e); toast(e && e.message && /[а-я]/i.test(e.message) ? e.message : 'Не получилось открыть «' + file.name + '». Проверь, что это EPUB, FB2, TXT или PDF.'); continue; }
     await ensureFreq(book.lang); await new Promise(res => importDialog(book, res));
   }
 }
@@ -1109,7 +1109,7 @@ function renderSettings() {
     ${installPrompt ? '<div class="row" style="margin-top:12px"><button class="btn" data-a="install">Установить как приложение</button></div>' : ''}
   </section>
   <section class="panel"><h2 style="margin-bottom:8px">Словари и источники</h2>
-    <p class="hint" style="margin:0">Частотность слов — FrequencyWords (Hermit Dave, CC BY-SA 4.0). Списки HSK 3.0 — hsk3.1-syllabus (MIT). Китайский словарь — CC-CEDICT (MDBG, CC BY-SA 4.0). Порядок черт — Hanzi Writer (MIT) и hanzi-writer-data (Arphic PL). Таблицы форм — Викисловарь (CC BY-SA). Простой перевод — Google Переводчик и MyMemory.</p>
+    <p class="hint" style="margin:0">Частотность слов — FrequencyWords (Hermit Dave, CC BY-SA 4.0). Списки HSK 3.0 — hsk3.1-syllabus (MIT). Китайский словарь — CC-CEDICT (MDBG, CC BY-SA 4.0). Порядок черт — Hanzi Writer (MIT) и hanzi-writer-data (Arphic PL). Таблицы форм — Викисловарь (CC BY-SA). Чтение PDF — pdf.js (Apache 2.0). Простой перевод — Google Переводчик и MyMemory.</p>
   </section></div>`;
 }
 function setSetting(k, v) {
