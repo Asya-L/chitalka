@@ -128,13 +128,13 @@ async def f05_fallback_more(c):
     p = await c.open()
     await import_book(p, 'sample.fb2'); await p.click('.continue [data-a="open"].btn'); await p.wait_for_selector('#rt w')
     c.free.google_down = True; c.free.mm_down = True
-    await p.locator('#rt w', has_text='las').first.click(); await p.wait_for_selector('.formmsg')
+    await p.locator('#rt w', has_text='las').first.click(); await p.wait_for_selector('.sheet .formmsg')
     assert 'ни Claude, ни запасные' in await p.inner_text('.sheet')
     c.free.google_down = False; c.free.mm_down = False
     await p.click('[data-a="w-retry"]'); await p.wait_for_selector('.w-tr')
     await p.go_back(); await p.wait_for_selector('.sheet', state='detached')
     await c.ctx.set_offline(True); c.free.google_down = True; c.free.mm_down = True
-    await p.locator('#rt w', has_text='powoli').first.click(); await p.wait_for_selector('.formmsg')
+    await p.locator('#rt w', has_text='powoli').first.click(); await p.wait_for_selector('.sheet .formmsg')
     assert 'Нет интернета' in await p.inner_text('.sheet')
     await c.ctx.set_offline(False)
     c.errors.clear(); await c.check()

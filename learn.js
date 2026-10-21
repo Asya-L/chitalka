@@ -109,6 +109,7 @@ function prepHTML() {
 }
 function prepWordsHTML(p) {
   if (p.busy) return '<div class="skeleton" style="width:60%"></div><div class="skeleton" style="width:40%"></div>';
+  if (p.info) return `<p class="hint" style="margin:0">${esc(p.info)}</p>`;
   if (p.err) return `<p class="formmsg">${esc(p.err)}</p><button class="btn sm" data-a="prep-load">Ещё раз</button>`;
   if (!p.items.length) return '<p class="hint" style="margin:0">В этой главе почти нет незнакомых слов.</p>';
   const L = R.lang;
@@ -149,7 +150,7 @@ Reply with JSON only: {"words":[{"w":"word exactly as it appears in the text","t
       if (p.items.length) idb.put('tr', ck, p).catch(() => { });
     }
     if (R !== r0) return;
-    R.prep = p.needKnown ? { items: [], err: 'Ключевые слова появятся, когда приложение узнает твой словарь: дочитай пару глав или добавь ключ Claude.' } : p;
+    R.prep = p.needKnown ? { items: [], info: 'Ключевые слова появятся, когда приложение узнает твой словарь: дочитай пару глав или добавь ключ Claude.' } : p;
   } catch (e) { if (R === r0) R.prep = { items: [], err: e.message || 'Не получилось подобрать слова.' }; }
   paintPrep();
 }
