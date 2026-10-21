@@ -229,15 +229,15 @@ async def f11_sync_more(c):
     """F11-E1, N1, N2."""
     c.backend.add_user('b@x.ru', 'secret2')
     p = await c.open()
-    await import_book(p, 'sample.fb2')
-    await p.click('[data-a="tab"][data-id="settings"]')
     await p.fill('#au-email', 'b@x.ru'); await p.fill('#au-pass', 'wrongpass'); await p.click('form[data-form="signin"] button[type=submit]')
     await p.wait_for_selector('text=Неверная почта или пароль')
     await p.fill('#au-pass', 'secret2'); await p.click('form[data-form="signin"] button[type=submit]')
+    await p.wait_for_selector('nav.tabs')
+    await import_book(p, 'sample.fb2')
     await p.wait_for_function('document.getElementById("status").textContent==="Синхронизировано"', timeout=8000)
     await until(lambda: len(c.backend.files) == 1, 'книга не загрузилась в хранилище')
     c2 = Ctx(c.pw, c.browser, c.url, c.claude, c.backend, True, mobile=False); p2 = await c2.open()
-    await p2.click('[data-a="tab"][data-id="settings"]'); await p2.fill('#au-email', 'b@x.ru'); await p2.fill('#au-pass', 'secret2'); await p2.click('form[data-form="signin"] button[type=submit]')
+    await p2.fill('#au-email', 'b@x.ru'); await p2.fill('#au-pass', 'secret2'); await p2.click('form[data-form="signin"] button[type=submit]')
     await p2.wait_for_function('Object.values(S.books).filter(b=>!b.del).length===1', timeout=8000)
     # N2 нет связи
     c.backend.offline = True

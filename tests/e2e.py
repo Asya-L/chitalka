@@ -212,6 +212,11 @@ class Ctx:
         assert not self.errors, 'ошибки в консоли: ' + '; '.join(self.errors[:5])
     async def close(self): await self.ctx.close()
 
+async def login(p, email, pw):
+    await p.wait_for_selector('form[data-form="signin"]')
+    await p.fill('#au-email', email); await p.fill('#au-pass', pw); await p.click('form[data-form="signin"] button[type=submit]')
+    await p.wait_for_selector('nav.tabs')
+
 async def set_key(p):
     await p.evaluate("localStorage.setItem('mezhdu-claude-key','sk-ant-test')")
 
@@ -380,10 +385,8 @@ async def c06_desktop(c):
 async def c07_sync_two_devices(c):
     c.backend.add_user('a@x.ru', 'secret1')
     p = await c.open(); await set_key(p)
-    await import_book(p, 'sample.fb2')          # книга добавлена до входа — должна уехать в аккаунт
-    await p.click('[data-a="tab"][data-id="settings"]')
-    await p.fill('#au-email', 'a@x.ru'); await p.fill('#au-pass', 'secret1'); await p.click('form[data-form="signin"] button[type=submit]')
-    await p.wait_for_selector('text=Вход выполнен')
+    await login(p, 'a@x.ru', 'secret1')         # сначала вход, потом приложение
+    await import_book(p, 'sample.fb2')
     await p.wait_for_function('document.getElementById("status").textContent==="Синхронизировано"', timeout=8000)
     uid = c.backend.users['a@x.ru']['id']
     assert uid in c.backend.rows and len(c.backend.files) == 1, (list(c.backend.rows), list(c.backend.files))
@@ -395,8 +398,7 @@ async def c07_sync_two_devices(c):
     # второе устройство
     c2 = Ctx(c.pw, c.browser, c.url, c.claude, c.backend, True, mobile=False)
     p2 = await c2.open()
-    await p2.click('[data-a="tab"][data-id="settings"]')
-    await p2.fill('#au-email', 'a@x.ru'); await p2.fill('#au-pass', 'secret1'); await p2.click('form[data-form="signin"] button[type=submit]')
+    await login(p2, 'a@x.ru', 'secret1')
     await p2.wait_for_function('Object.keys(S.words).length===1', timeout=8000)
     await p2.click('[data-a="tab"][data-id="shelf"]'); await p2.wait_for_selector('.continue')
     await p2.click('.continue [data-a="open"].btn'); await p2.wait_for_selector('#rt w.s')   # текст скачан, слово подсвечено
@@ -485,6 +487,7 @@ async def c10_schedule_push(c):
     c.sync = True; c.init_script = PUSH_MOCK
     c.backend.add_user('a@x.ru', 'secret1')
     p = await c.open(); await set_key(p)
+    await login(p, 'a@x.ru', 'secret1')
     await import_book(p, 'sample.fb2')
     await p.click('[data-a="tab"][data-id="settings"]'); await p.wait_for_selector('#reminders')
     # польский: ср, пт 19:00, 20 мин
@@ -504,10 +507,6 @@ async def c10_schedule_push(c):
     assert 'Польский' in txt and 'ср, пт · 20 мин' in txt and '19:00' in txt, txt
     sch = await p.evaluate('S.settings.schedule'); assert [x['lang'] for x in sch] == ['en', 'pl'], sch
     assert await p.evaluate('S.settings.tz') == 'Europe/Kaliningrad'
-    # без входа — подсказка
-    await p.click('[data-a="push-on"]'); await p.wait_for_selector('text=Сначала войди в аккаунт')
-    await p.fill('#au-email', 'a@x.ru'); await p.fill('#au-pass', 'secret1'); await p.click('form[data-form="signin"] button[type=submit]')
-    await p.wait_for_selector('text=Вход выполнен')
     await p.click('[data-a="push-on"]'); await p.wait_for_selector('text=Уведомления включены')
     assert await p.evaluate('__push.key') == 65
     subs = getattr(c.backend, 'subs', {}); assert list(subs) == ['https://fcm.googleapis.com/fcm/send/XYZ'], subs

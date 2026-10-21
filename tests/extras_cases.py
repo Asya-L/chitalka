@@ -347,5 +347,30 @@ async def x16_offline_data(c):
     src = open(os.path.join(ROOT, 'sw.js'), encoding='utf-8').read()
     assert "DATA_CACHE" in src and "k !== DATA_CACHE" in src and "'extras.js'" in src
 
-EXTRAS_CASES = [x01_freq_levels, x02_cedict, x03_more_in_book, x04_paragraph, x05_quotes_bookmarks, x06_rich_text, x07_search_spread,
+async def g01_auth_first(c):
+    """Правило: сначала авторизация. Без входа — только экран входа; после входа — приложение; выход возвращает на вход."""
+    c.sync = True; c.backend.add_user('g@x.ru', 'secret9')
+    p = await c.open()
+    await p.wait_for_selector('.gate form[data-form="signin"]')
+    assert await p.locator('nav.tabs').count() == 0 and await p.locator('#file').count() == 0
+    await c.shot('g01-gate')
+    # регистрация и восстановление доступны с экрана входа
+    await p.click('[data-a="auth-mode"][data-id="up"]'); await p.wait_for_selector('.gate form[data-form="signup"]')
+    await p.click('[data-a="auth-mode"][data-id="in"]'); await p.click('[data-a="auth-mode"][data-id="forgot"]'); await p.wait_for_selector('.gate form[data-form="forgot"]')
+    await p.click('[data-a="auth-mode"][data-id="in"]')
+    # ссылка из уведомления ждёт входа
+    await p.goto(c.url + '?open=pl'); await p.wait_for_selector('.gate form[data-form="signin"]')
+    await p.fill('#au-email', 'g@x.ru'); await p.fill('#au-pass', 'nope123'); await p.click('form[data-form="signin"] button[type=submit]')
+    await p.wait_for_selector('text=Неверная почта или пароль'); assert await p.locator('nav.tabs').count() == 0
+    await login(p, 'g@x.ru', 'secret9')
+    await p.wait_for_selector('text=Учить язык, читая свои книги')
+    await import_book(p, 'sample.fb2'); await p.wait_for_timeout(500)
+    # после перезагрузки вход сохраняется, экран входа не мелькает дольше проверки
+    await p.goto(c.url + '?open=pl'); await p.wait_for_selector('#rt w')
+    await p.go_back(); await p.wait_for_selector('.reader', state='detached')
+    await p.click('[data-a="tab"][data-id="settings"]'); await p.click('[data-a="signout"]')
+    await p.wait_for_selector('.gate form[data-form="signin"]'); assert 'Ты вышла' in await p.inner_text('.gate')
+    await c.check()
+
+EXTRAS_CASES = [g01_auth_first, x01_freq_levels, x02_cedict, x03_more_in_book, x04_paragraph, x05_quotes_bookmarks, x06_rich_text, x07_search_spread,
                 x08_new_cards, x09_say_after, x10_mini_review, x11_hanzi, x12_tones, x13_pl_table, x14_goals_year, x15_merge, x16_offline_data]

@@ -417,6 +417,7 @@ if (darkMQ && darkMQ.addEventListener) darkMQ.addEventListener('change', applyTh
 const TABS = [['shelf', 'Полка'], ['words', 'Слова'], ['diary', 'Дневник'], ['settings', 'Настройки']];
 function render() {
   const app = $('#app');
+  if (gated()) { app.innerHTML = renderGate(); setStatus(); return; }
   const due = reviewQueue().length;
   app.innerHTML = `<header class="top"><div class="top-in">
     <div class="brand">${I.logo}<span>Между строк</span></div>
@@ -531,7 +532,7 @@ function hideSheet() {
 
 /* ---------------- reader ---------------- */
 async function openBook(id) {
-  const b = S.books[id]; if (!b) return;
+  const b = S.books[id]; if (!b || gated()) return;
   let c = await idb.get('books', id).catch(() => null);
   if (!c) {
     if (b.cloud && session) { toast('Загружаю книгу из облака…'); c = await downloadBook(id); }
@@ -1062,6 +1063,7 @@ function syncNative() {
   } catch (e) { }
 }
 async function openLangFromUrl() {
+  if (gated()) return;   // ссылки из уведомлений откроются после входа
   const tm = location.search.match(/[?&]tab=(shelf|words|diary|settings)/);
   if (tm) { ui.tab = tm[1]; try { history.replaceState(null, '', location.pathname); } catch (e) { } render(); return; }
   const m = location.search.match(/[?&]open=(en|pl|zh)/); if (!m) return;
@@ -1194,15 +1196,32 @@ function renderAccount() {
     return h + `<form data-form="newpass"><label class="f">Новый пароль<input class="in" id="au-pass" type="password" autocomplete="new-password" minlength="6" required></label><button class="btn primary" type="submit"${auth.busy ? ' disabled' : ''}>Сохранить пароль</button></form>${auth.msg ? `<p class="formmsg">${esc(auth.msg)}</p>` : ''}</section>`;
   }
   if (session) return h + `<p style="margin-top:0">Вход выполнен: <b>${esc(session.user.email)}</b>. Слова, прогресс и книги одинаковые на телефоне и компьютере.</p>${syncErr ? `<p class="formmsg">Последняя попытка не удалась: ${esc(syncErr)}. Повторю сама, как появится связь.</p>` : ''}<div class="row"><button class="btn" data-a="sync-now">Синхронизировать сейчас</button><button class="btn ghost" data-a="signout">Выйти</button></div></section>`;
-  if (auth.mode === 'forgot') return h + `${auth.info ? `<p class="notice">${esc(auth.info)}</p>` : ''}<form data-form="forgot"><label class="f">Электронная почта<input class="in" id="au-email" type="email" autocomplete="email" value="${esc(auth.email)}" required></label><div class="row"><button class="btn primary" type="submit"${auth.busy ? ' disabled' : ''}>Прислать ссылку</button><button class="btn ghost" type="button" data-a="auth-mode" data-id="in">Назад</button></div></form>${auth.msg ? `<p class="formmsg" role="alert">${esc(auth.msg)}</p>` : ''}</section>`;
+  return h + authFormsHTML() + '</section>';
+}
+/* Правило: сначала вход, потом приложение. Пока не вошла — только экран входа. */
+let authReady = false;
+const gated = () => SYNC_READY && !!sb && (!authReady || !session || auth.mode === 'newpass');
+function renderGate() {
+  let body;
+  if (!authReady) body = '<p class="hint" style="text-align:center;margin:8px 0 0" role="status">Проверяю вход…</p>';
+  else if (session && auth.mode === 'newpass') body = `<h2 style="margin-bottom:12px">Новый пароль</h2><form data-form="newpass"><label class="f">Новый пароль<input class="in" id="au-pass" type="password" autocomplete="new-password" minlength="6" required></label><button class="btn primary" type="submit"${auth.busy ? ' disabled' : ''}>Сохранить пароль</button></form>${auth.msg ? `<p class="formmsg">${esc(auth.msg)}</p>` : ''}`;
+  else body = `<h2 style="margin-bottom:6px">${auth.mode === 'up' ? 'Создать аккаунт' : auth.mode === 'forgot' ? 'Восстановить пароль' : 'Вход'}</h2>${authFormsHTML()}`;
+  return `<div class="gate"><div class="gate-in">
+    <div class="brand gate-brand">${I.logo}<span>Между строк</span></div>
+    <p class="gate-sub">Учить английский, польский и китайский по своим книгам</p>
+    <section class="panel gate-card" aria-label="Вход">${body}</section>
+  </div></div>`;
+}
+function authFormsHTML() {
+  if (auth.mode === 'forgot') return `${auth.info ? `<p class="notice">${esc(auth.info)}</p>` : ''}<form data-form="forgot"><label class="f">Электронная почта<input class="in" id="au-email" type="email" autocomplete="email" value="${esc(auth.email)}" required></label><div class="row"><button class="btn primary" type="submit"${auth.busy ? ' disabled' : ''}>Прислать ссылку</button><button class="btn ghost" type="button" data-a="auth-mode" data-id="in">Назад</button></div></form>${auth.msg ? `<p class="formmsg" role="alert">${esc(auth.msg)}</p>` : ''}`;
   const up = auth.mode === 'up';
-  return h + `<p class="hint" style="margin-top:0">Войди, чтобы книги, слова и прогресс были на всех устройствах.</p>${auth.info ? `<p class="notice">${esc(auth.info)}</p>` : ''}
+  return `<p class="hint" style="margin-top:0">Книги, слова и прогресс хранятся в аккаунте и одинаковые на всех устройствах.</p>${auth.info ? `<p class="notice">${esc(auth.info)}</p>` : ''}
     <form data-form="${up ? 'signup' : 'signin'}"><label class="f">Электронная почта<input class="in" id="au-email" type="email" autocomplete="email" value="${esc(auth.email)}" required></label>
     <label class="f">Пароль<input class="in" id="au-pass" type="password" autocomplete="${up ? 'new-password' : 'current-password'}" minlength="6" required></label>
     <div class="row"><button class="btn primary" type="submit"${auth.busy ? ' disabled' : ''}>${auth.busy ? 'Подожди…' : up ? 'Создать аккаунт' : 'Войти'}</button>
     <button class="btn ghost" type="button" data-a="auth-mode" data-id="${up ? 'in' : 'up'}">${up ? 'У меня уже есть аккаунт' : 'Создать аккаунт'}</button>
     ${up ? '' : '<button class="btn ghost" type="button" data-a="auth-mode" data-id="forgot">Забыла пароль</button>'}</div></form>
-    ${auth.msg ? `<p class="formmsg" role="alert">${esc(auth.msg)}</p>` : ''}</section>`;
+    ${auth.msg ? `<p class="formmsg" role="alert">${esc(auth.msg)}</p>` : ''}`;
 }
 async function authSubmit(kind) {
   if (!sb || auth.busy) return;
@@ -1247,11 +1266,17 @@ async function initSync() {
   if (!SYNC_READY) { setStatus(); return; }
   try {
     sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseKey, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } });
+    const ready = () => { if (authReady) return; authReady = true; render(); if (session) openLangFromUrl(); };
+    setTimeout(ready, 6000);   // если хранилище сессии недоступно — не висим на «Проверяю вход»
     sb.auth.onAuthStateChange((ev, s) => {
-      const had = session && session.user.id; session = s;
+      const had = session && session.user.id; const wasGated = gated(); session = s;
       if (ev === 'PASSWORD_RECOVERY') { auth.mode = 'newpass'; ui.tab = 'settings'; }
       if (s && s.user.id !== had) setTimeout(sync, 0);
-      setStatus(); if (!R && !RV && !sheetOpen && (ui.tab === 'settings' || had !== (s && s.user.id))) render();
+      if (!authReady) { setTimeout(ready, 0); return; }
+      if (!s && (R || RV)) { if (RV) exitReview(); exitReaderHard(); }
+      setStatus();
+      if (wasGated !== gated()) { if (sheetOpen) hideSheet(); render(); if (!gated()) openLangFromUrl(); }
+      else if (!R && !RV && !sheetOpen && (ui.tab === 'settings' || had !== (s && s.user.id))) render();
     });
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') sync(); else if (dirty) sync(); });
     window.addEventListener('online', sync);
@@ -1388,8 +1413,8 @@ async function testKey() {
 /* ---------------- start ---------------- */
 async function start() {
   try { const st = await idb.get('kv', 'state'); if (st) S = normalize(st); } catch (e) { }
-  applyTheme(); render();
-  initSync();
+  applyTheme();
+  initSync(); render();
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => { });
   syncNative(); openLangFromUrl();
 }
