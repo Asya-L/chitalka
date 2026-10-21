@@ -302,3 +302,22 @@ table.tl td.n,table.tl th.n{text-align:right;font-variant-numeric:tabular-nums}
 .reader.paged .r-scroll{overflow-y:hidden;touch-action:none}
 .reader.paged .r-foot{padding-top:6px;padding-bottom:calc(6px + env(safe-area-inset-bottom))}
 .r-foot .pg{min-width:58px;min-height:44px;font-size:24px;line-height:1;padding:0 12px}
+
+/* ---------- расписание ---------- */
+.plan-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+.plan-item{display:flex;align-items:center;gap:14px;background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:14px 16px;box-shadow:var(--sh-raise)}
+.plan-item .pi-main{flex:1;min-width:0}
+.plan-item .pi-h{font-weight:500;margin-bottom:8px}
+.plan-item .bar{margin-bottom:6px;max-width:none}
+.pi-ok{font-size:22px;color:var(--accent);padding:0 6px}
+.sched{list-style:none;margin:0 0 14px;padding:0;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--paper);box-shadow:var(--sh-inset)}
+.sched li + li{border-top:1px solid var(--line)}
+.sched button{width:100%;display:grid;grid-template-columns:auto 1fr auto;column-gap:10px;row-gap:2px;align-items:baseline;border:0;background:none;padding:12px 14px;text-align:left;color:var(--ink)}
+.sched button:hover{background:var(--card)}
+.sched .t{font-variant-numeric:tabular-nums;font-weight:500}
+.sched .d{grid-column:2/4;color:var(--muted);font-size:14px}
+.days-pick{display:flex;gap:6px;flex-wrap:wrap}
+.days-pick .chip{min-width:44px;min-height:40px;text-align:center}
+.pill-on{display:inline-flex;align-items:center;gap:6px;background:var(--soft);color:var(--accent);border-radius:999px;padding:6px 12px;font-weight:500;font-size:14px}
+.pill-on::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--accent)}
+:root[data-theme="eink"] .plan-item,:root[data-theme="eink"] .sched{border:2px solid #000}

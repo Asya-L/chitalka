@@ -56,7 +56,7 @@ const DEV = (() => { let d = null; try { d = localStorage.getItem('mezhdu-dev');
 const getKey = () => { try { return localStorage.getItem(KEY_LS) || ''; } catch (e) { return ''; } };
 
 function fresh() {
-  return { v: 1, settings: { u: 0, target: 'ru', model: MODELS[0].id, font: 19, lh: 1.65, theme: 'auto', pinyin: true, goal: 20, newPerDay: 15, levels: { en: 'B1', pl: 'B1', zh: 'HSK1' } }, books: {}, words: {}, log: {} };
+  return { v: 1, settings: { u: 0, target: 'ru', model: MODELS[0].id, font: 19, lh: 1.65, theme: 'auto', pinyin: true, goal: 20, newPerDay: 15, levels: { en: 'B1', pl: 'B1', zh: 'HSK1' }, schedule: [], tz: '' }, books: {}, words: {}, log: {} };
 }
 function normalize(x) {
   const f = fresh();
@@ -92,7 +92,7 @@ function stable(v) {
 
 let S = fresh();
 let persistTimer = null, syncTimer = null;
-function persist() { return idb.put('kv', 'state', S).catch(() => { }); }
+function persist() { syncNative(); return idb.put('kv', 'state', S).catch(() => { }); }
 function save(delay) {
   clearTimeout(persistTimer); persistTimer = setTimeout(persist, 250);
   if (session) { dirty = true; clearTimeout(syncTimer); syncTimer = setTimeout(sync, delay == null ? 1500 : delay); }
@@ -107,6 +107,7 @@ function bump(field, n) {
   const e = L[DEV] || (L[DEV] = {});
   e[field] = Math.round(((e[field] || 0) + n) * 100) / 100;
 }
+function langMinutes(d, lang) { let m = 0; for (const e of Object.values(S.log[d] || {})) m += e['m_' + lang] || 0; return m; }
 function dayTotals(d) {
   const t = { min: 0, saved: 0, rev: 0, words: 0, nw: 0 };
   for (const e of Object.values(S.log[d] || {})) for (const k in t) t[k] += e[k] || 0;
@@ -444,6 +445,7 @@ function renderShelf() {
       <span class="hint">Сегодня ${Math.round(t.min)} из ${S.settings.goal} мин</span></div>
     </div>
   </section>
+  ${renderPlanToday()}
   <section class="sec">
     <div class="sec-h"><h2>Полка</h2>${langs.length > 1 ? `<div class="chips" role="group" aria-label="Язык">${['all', ...langs].map(l => `<button class="chip" data-a="filter" data-id="${l}" aria-pressed="${ui.filter === l}">${l === 'all' ? 'Все' : `<span class="lang-dot" style="--c:var(--${l})"></span>${LANGS[l].name}`}</button>`).join('')}</div>` : ''}</div>
     <div class="shelf">
@@ -656,6 +658,7 @@ function stopActivity() { clearInterval(act.iv); act.iv = null; }
 function tickActivity() {
   if (document.visibilityState !== 'visible' || now() - act.last > 120000) return;
   bump('min', 0.25);
+  const lang = R ? R.lang : RV ? RV.lang : null; if (lang) bump('m_' + lang, 0.25);
   if (R) { const b = curBook(); if (b) { b.mins = Math.round(((b.mins || 0) + 0.25) * 100) / 100; b.u = now(); } }
   save(20000);
 }
@@ -868,6 +871,138 @@ function renderDiary() {
   </tbody></table></div></section>` : ''}`;
 }
 
+/* ---------------- расписание и напоминания ---------------- */
+const WD = ['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'];
+const isoWd = d => (d.getDay() + 6) % 7 + 1;
+const deviceTz = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch (e) { return 'UTC'; } };
+function schedule() { return (S.settings.schedule || []).filter(it => it && LANGS[it.lang]); }
+function todayPlan() { const wd = isoWd(new Date()); return schedule().filter(it => !it.off && it.days.includes(wd)).sort((a, b) => a.time.localeCompare(b.time)); }
+function daysLabel(days) {
+  const d = [...days].sort();
+  if (d.length === 7) return 'каждый день';
+  if (d.join() === '1,2,3,4,5') return 'по будням';
+  if (d.join() === '6,7') return 'по выходным';
+  return d.map(x => WD[x - 1]).join(', ');
+}
+function renderPlanToday() {
+  const plan = todayPlan(); if (!plan.length) return '';
+  return `<section class="sec plan" aria-label="План на сегодня"><div class="sec-h"><h2>Сегодня по плану</h2><span class="hint">${esc(WD[isoWd(new Date()) - 1])}</span></div><div class="plan-list">
+    ${plan.map(it => { const done = langMinutes(today(), it.lang); const f = Math.min(1, done / it.min); const book = liveBooks().find(b => b.lang === it.lang);
+      return `<div class="plan-item" style="--c:var(--${it.lang})"><div class="pi-main"><div class="pi-h"><span class="lang-dot" style="--c:var(--${it.lang})"></span>${LANGS[it.lang].ru} <span class="hint">в ${esc(it.time)}</span></div>
+        <div class="bar" aria-hidden="true"><i style="width:${Math.round(f * 100)}%"></i></div><div class="hint">${f >= 1 ? 'Готово: ' + Math.round(done) + ' мин' : Math.round(done) + ' из ' + it.min + ' мин'}</div></div>
+        ${book && f < 1 ? `<button class="btn sm${f < 1 ? ' primary' : ''}" data-a="open" data-id="${book.id}">Читать</button>` : f >= 1 ? '<span class="pi-ok" aria-label="Выполнено">✓</span>' : ''}</div>`; }).join('')}
+  </div></section>`;
+}
+function scheduleEditor(id) {
+  const ex = schedule().find(it => it.id === id);
+  const d = ex ? JSON.parse(JSON.stringify(ex)) : { id: 's' + now().toString(36), lang: 'pl', days: [], time: '19:00', min: 20 };
+  const paint = () => showSheet(`<h2 style="margin-bottom:14px">${ex ? 'Занятие' : 'Новое занятие'}</h2>
+    <form data-form="sched">
+      <div class="f">Язык<div style="margin-top:6px" class="seg" role="group" aria-label="Язык">${Object.keys(LANGS).map(l => `<button type="button" data-a="sc-lang" data-id="${l}" aria-pressed="${d.lang === l}">${LANGS[l].ru}</button>`).join('')}</div></div>
+      <div class="f">Дни<div style="margin-top:6px" class="days-pick" role="group" aria-label="Дни недели">${WD.map((n, i) => `<button type="button" class="chip" data-a="sc-day" data-id="${i + 1}" aria-pressed="${d.days.includes(i + 1)}">${n}</button>`).join('')}</div></div>
+      <div class="row" style="align-items:flex-start;gap:16px">
+        <label class="f" style="width:150px">Время<input class="in" type="time" name="time" value="${esc(d.time)}" required></label>
+        <div class="f">Минут<div style="margin-top:6px" class="seg" role="group" aria-label="Минут">${[10, 15, 20, 30, 45, 60].map(m => `<button type="button" data-a="sc-min" data-id="${m}" aria-pressed="${d.min === m}">${m}</button>`).join('')}</div></div>
+      </div>
+      ${scheduleEditor.err ? `<p class="formmsg" role="alert">${esc(scheduleEditor.err)}</p>` : ''}
+      <div class="row" style="margin-top:6px"><button class="btn primary" type="submit">Сохранить</button><button class="btn ghost" type="button" data-a="sheet-close">Отмена</button>${ex ? '<button class="btn ghost danger" type="button" data-a="sc-del">Удалить</button>' : ''}</div>
+    </form>`, { center: true, label: 'Занятие по расписанию' });
+  scheduleEditor.cur = { d, paint, isNew: !ex }; scheduleEditor.err = '';
+  paint();
+}
+function scheduleSave() {
+  const { d } = scheduleEditor.cur; const f = document.querySelector('form[data-form="sched"]');
+  d.time = f.time.value || '19:00';
+  if (!d.days.length) { scheduleEditor.err = 'Выбери хотя бы один день.'; scheduleEditor.cur.paint(); return; }
+  d.days.sort();
+  const list = schedule().filter(it => it.id !== d.id); list.push(d);
+  list.sort((a, b) => Math.min(...a.days) - Math.min(...b.days) || a.time.localeCompare(b.time));
+  S.settings.schedule = list; S.settings.tz = deviceTz(); S.settings.u = now(); save();
+  closeLayer('sheet'); setTimeout(render, 30); toast('Расписание сохранено');
+}
+function scheduleDelete() {
+  const { d } = scheduleEditor.cur;
+  S.settings.schedule = schedule().filter(it => it.id !== d.id); S.settings.u = now(); save();
+  closeLayer('sheet'); setTimeout(render, 30);
+}
+
+/* уведомления: в APK — будильники Android, в браузере — Web Push через Supabase */
+const pushState = { status: 'unknown', busy: false, msg: '' };
+const PUSH_OK = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const standalone = () => (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone;
+function b64uToBytes(s) { s = s.replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '='; return Uint8Array.from(atob(s), c => c.charCodeAt(0)); }
+async function swReg() { if (!('serviceWorker' in navigator)) return null; return (await navigator.serviceWorker.getRegistration()) || navigator.serviceWorker.ready; }
+async function refreshPushState() {
+  if (NATIVE || !PUSH_OK) return;
+  try { const reg = await swReg(); const sub = reg && await reg.pushManager.getSubscription(); pushState.status = sub && Notification.permission === 'granted' ? 'on' : Notification.permission === 'denied' ? 'denied' : 'off'; }
+  catch (e) { pushState.status = 'off'; }
+  if (ui.tab === 'settings' && !sheetOpen) render();
+}
+async function pushOn() {
+  if (!session) { pushState.msg = 'Сначала войди в аккаунт — уведомления привязаны к нему.'; render(); return; }
+  pushState.busy = true; pushState.msg = ''; render();
+  try {
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') throw new Error(perm === 'denied' ? 'Уведомления запрещены для этого сайта. Разреши их в настройках браузера и нажми ещё раз.' : 'Разрешение на уведомления не дано.');
+    const reg = await swReg(); if (!reg) throw new Error('Браузер не поддерживает фоновые уведомления.');
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(CFG.vapidPublicKey) });
+    const j = sub.toJSON();
+    const { error } = await sb.from('mezhdu_push_subs').upsert({ endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth, user_id: session.user.id, ua: navigator.userAgent.slice(0, 200) });
+    if (error) throw new Error('Не получилось сохранить подписку: ' + error.message);
+    if (!S.settings.tz) { S.settings.tz = deviceTz(); S.settings.u = now(); save(); }
+    pushState.status = 'on'; toast('Уведомления включены');
+  } catch (e) { pushState.msg = e.message || 'Не получилось включить уведомления.'; }
+  pushState.busy = false; render();
+}
+async function pushOff() {
+  pushState.busy = true; render();
+  try {
+    const reg = await swReg(); const sub = reg && await reg.pushManager.getSubscription();
+    if (sub) { if (sb && session) await sb.from('mezhdu_push_subs').delete().eq('endpoint', sub.endpoint); await sub.unsubscribe(); }
+    pushState.status = 'off';
+  } catch (e) { pushState.msg = 'Не получилось выключить: ' + e.message; }
+  pushState.busy = false; render();
+}
+async function pushTest() {
+  try { const reg = await swReg(); const it = schedule()[0] || { lang: 'pl', min: 20 }; await reg.showNotification(LANGS[it.lang].ru + ' — ' + it.min + ' мин', { body: 'Так будет выглядеть напоминание.', icon: 'icon-192.png', badge: 'icon-192.png', tag: 'mezhdu-test' }); }
+  catch (e) { pushState.msg = 'Не получилось показать уведомление: ' + e.message; render(); }
+}
+function renderReminders() {
+  const items = schedule();
+  let notif;
+  if (NATIVE) notif = `<p class="hint" style="margin:0 0 10px">На этом устройстве напоминания ставит само приложение — интернет для них не нужен.</p><button class="btn" data-a="native-notif">Разрешить уведомления</button>`;
+  else if (!PUSH_OK) notif = `<p class="hint" style="margin:0">${isIOS && !standalone() ? 'На iPhone уведомления работают, только если добавить приложение на экран «Домой»: «Поделиться» → «На экран „Домой“», затем открыть его оттуда.' : 'Этот браузер не умеет показывать уведомления от сайтов.'}</p>`;
+  else if (!SYNC_READY) notif = '<p class="hint" style="margin:0">Для уведомлений нужна синхронизация.</p>';
+  else notif = `<div class="row">${pushState.status === 'on' ? `<span class="pill-on">Уведомления включены</span><button class="btn sm" data-a="push-test">Показать пример</button><button class="btn ghost sm" data-a="push-off"${pushState.busy ? ' disabled' : ''}>Выключить</button>` : `<button class="btn primary" data-a="push-on"${pushState.busy ? ' disabled' : ''}>${pushState.busy ? 'Включаю…' : 'Включить уведомления на этом устройстве'}</button>`}</div>
+    ${pushState.msg ? `<p class="formmsg" role="alert" style="margin-top:10px">${esc(pushState.msg)}</p>` : ''}
+    ${!session ? '<p class="hint" style="margin:10px 0 0">Уведомления привязаны к аккаунту — войди в разделе «Синхронизация».</p>' : ''}`;
+  return `<section class="panel" id="reminders"><h2 style="margin-bottom:6px">Расписание</h2>
+    <p class="hint" style="margin:0 0 14px">В выбранные дни придёт напоминание, если ты ещё не позанималась этим языком нужное время.</p>
+    ${items.length ? `<ul class="sched">${items.map(it => `<li><button data-a="sc-edit" data-id="${esc(it.id)}" aria-label="Изменить: ${LANGS[it.lang].ru}, ${esc(daysLabel(it.days))}, ${esc(it.time)}"><span class="lang-dot" style="--c:var(--${it.lang})"></span><b>${LANGS[it.lang].ru}</b><span class="t">${esc(it.time)}</span><span class="d">${esc(daysLabel(it.days))} · ${it.min} мин</span></button></li>`).join('')}</ul>` : ''}
+    <button class="btn" data-a="sc-add">${I.plus}Добавить занятие</button>
+    <div style="margin-top:18px;padding-top:16px;border-top:1px solid var(--line)">${notif}</div>
+  </section>`;
+}
+function syncNative() {
+  if (!NATIVE || !NATIVE.setSchedule) return;
+  try {
+    const t = today(); const info = {};
+    for (const l of Object.keys(LANGS)) {
+      const b = liveBooks().find(x => x.lang === l);
+      const due = liveWords(l).filter(w => w.st === 'learn' && w.srs.due <= now()).length;
+      info[l] = { done: langMinutes(t, l), book: b ? b.title : '', pct: b ? Math.floor((b.pct || 0) * 100) : 0, due };
+    }
+    NATIVE.setSchedule(JSON.stringify({ items: schedule(), day: t, info }));
+  } catch (e) { }
+}
+async function openLangFromUrl() {
+  const m = location.search.match(/[?&]open=(en|pl|zh)/); if (!m) return;
+  try { history.replaceState(null, '', location.pathname + location.search.replace(/[?&]open=(en|pl|zh)/, '').replace(/^&/, '?')); } catch (e) { }
+  const b = liveBooks().find(x => x.lang === m[1]); if (b) openBook(b.id);
+}
+
 /* ---------------- settings ---------------- */
 let keyMsg = '', installPrompt = null;
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installPrompt = e; if (ui.tab === 'settings') render(); });
@@ -896,6 +1031,7 @@ function renderSettings() {
     <div class="f">Цель в день<div style="margin-top:5px">${seg('goal', [[10, '10 мин'], [20, '20 мин'], [30, '30 мин'], [45, '45 мин'], [60, 'час']], st.goal, 'Цель в день')}</div></div>
     <div class="f">Новых слов в повторении за день<div style="margin-top:5px">${seg('newPerDay', [[5, '5'], [10, '10'], [15, '15'], [25, '25'], [40, '40']], st.newPerDay, 'Новых слов в день')}</div></div>
   </section>
+  ${renderReminders()}
   ${renderAccount()}
   <section class="panel"><h2 style="margin-bottom:12px">Данные</h2>
     <p class="hint" style="margin-top:0">Копия слов, прогресса и настроек одним файлом. Тексты книг в копию не входят.</p>
@@ -1083,7 +1219,7 @@ document.addEventListener('click', e => {
   const a = t.dataset.a, id = t.dataset.id;
   if (t.tagName === 'A') e.preventDefault();
   switch (a) {
-    case 'tab': if (sheetOpen) closeLayer('sheet'); ui.tab = id; render(); window.scrollTo(0, 0); break;
+    case 'tab': if (sheetOpen) closeLayer('sheet'); ui.tab = id; render(); window.scrollTo(0, 0); if (id === 'settings') refreshPushState(); break;
     case 'filter': ui.filter = id; render(); break;
     case 'add': $('#file').click(); break;
     case 'open': openBook(id); break;
@@ -1094,6 +1230,16 @@ document.addEventListener('click', e => {
     case 'r-ch': goChapter(+id); break;
     case 'pg': pageTurn(+id); break;
     case 'eink': setEink(!EINK); break;
+    case 'sc-add': scheduleEditor(null); break;
+    case 'sc-edit': scheduleEditor(id); break;
+    case 'sc-lang': scheduleEditor.cur.d.lang = id; { const f = document.querySelector('form[data-form="sched"]'); if (f) scheduleEditor.cur.d.time = f.time.value; } scheduleEditor.cur.paint(); break;
+    case 'sc-day': { const c = scheduleEditor.cur.d; const n = +id; c.days = c.days.includes(n) ? c.days.filter(x => x !== n) : [...c.days, n]; const f = document.querySelector('form[data-form="sched"]'); if (f) c.time = f.time.value; scheduleEditor.err = ''; scheduleEditor.cur.paint(); break; }
+    case 'sc-min': { const f = document.querySelector('form[data-form="sched"]'); if (f) scheduleEditor.cur.d.time = f.time.value; scheduleEditor.cur.d.min = +id; scheduleEditor.cur.paint(); break; }
+    case 'sc-del': scheduleDelete(); break;
+    case 'push-on': pushOn(); break;
+    case 'push-off': pushOff(); break;
+    case 'push-test': pushTest(); break;
+    case 'native-notif': try { NATIVE.requestNotifications(); } catch (x) { } break;
     case 'r-goto': closeLayer('sheet'); setTimeout(() => goChapter(+id), 0); break;
     case 'fs': S.settings.font = Math.max(14, Math.min(30, S.settings.font + (+id))); setSetting('font', S.settings.font); break;
     case 'theme': setSetting('theme', id); break;
@@ -1144,6 +1290,7 @@ document.addEventListener('input', e => {
 document.addEventListener('submit', e => {
   const f = e.target; const k = f.dataset.form; if (!k) return; e.preventDefault();
   if (k === 'import') finishImport();
+  if (k === 'sched') scheduleSave();
   if (k === 'key') { const v = f.elements.namedItem('key').value.trim(); try { if (v) localStorage.setItem(KEY_LS, v); else localStorage.removeItem(KEY_LS); } catch (x) { } keyMsg = v ? 'Ключ сохранён на этом устройстве.' : 'Ключ удалён.'; render(); if (v) testKey(); }
   if (k === 'edit-tr') { const w = S.words[f.dataset.id]; if (w) { w.tr = f.tr.value.trim(); w.u = now(); save(); toast('Перевод сохранён'); } }
   if (['signin', 'signup', 'forgot', 'newpass'].includes(k)) authSubmit(k);
@@ -1172,4 +1319,5 @@ async function testKey() {
   applyTheme(); render();
   initSync();
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => { });
+  syncNative(); openLangFromUrl();
 })();

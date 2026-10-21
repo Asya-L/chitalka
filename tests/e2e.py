@@ -112,6 +112,15 @@ class Backend:
                 assert b['user_id'] == uid
                 self.rows[uid] = {'state': json.loads(json.dumps(b['state']))}
                 return await route.fulfill(status=201, headers={**cors, 'content-type': 'application/json'}, body='')
+        if path == '/rest/v1/mezhdu_push_subs':
+            if not uid: return await js({'message': 'no auth'}, 401)
+            if req.method == 'POST':
+                b = json.loads(req.post_data); b = b[0] if isinstance(b, list) else b
+                assert b['user_id'] == uid; self.subs = getattr(self, 'subs', {}); self.subs[b['endpoint']] = b
+                return await route.fulfill(status=201, headers={**cors, 'content-type': 'application/json'}, body='')
+            if req.method == 'DELETE':
+                ep = parse_qs(u.query)['endpoint'][0].split('eq.', 1)[1]; getattr(self, 'subs', {}).pop(ep, None)
+                return await route.fulfill(status=204, headers=cors)
         m = re.match(r'/storage/v1/object/(?:authenticated/)?books/(.+)', path)
         if m:
             key = m.group(1)
@@ -429,7 +438,72 @@ async def c09_eink_android(c):
     assert await p.evaluate('document.documentElement.dataset.theme') != 'eink'
     await c.check()
 
-CASES = [c01_empty_and_import, c02_read_tap_save, c03_chinese, c04_review, c05_errors_and_settings, c06_desktop, c07_sync_two_devices, c08_fallback, c09_eink_android]
+PUSH_MOCK = '''
+window.__push = {sub: null, shown: []};
+const fakeSub = () => ({endpoint: 'https://fcm.googleapis.com/fcm/send/XYZ', toJSON(){return {endpoint: this.endpoint, keys: {p256dh: 'BPUB', auth: 'AUTH'}}}, unsubscribe: async () => { __push.sub = null; return true; }});
+const reg = {pushManager: {getSubscription: async () => __push.sub, subscribe: async (o) => { __push.key = o.applicationServerKey.length; __push.sub = fakeSub(); return __push.sub; }}, showNotification: async (t, o) => __push.shown.push(t)};
+Object.defineProperty(navigator, 'serviceWorker', {value: {getRegistration: async () => reg, ready: Promise.resolve(reg), register: async () => reg}});
+window.PushManager = function(){};
+window.Notification = {permission: 'default', requestPermission: async () => (Notification.permission = 'granted')};
+'''
+
+async def c10_schedule_push(c):
+    c.sync = True; c.init_script = PUSH_MOCK
+    c.backend.add_user('a@x.ru', 'secret1')
+    p = await c.open(); await set_key(p)
+    await import_book(p, 'sample.fb2')
+    await p.click('[data-a="tab"][data-id="settings"]'); await p.wait_for_selector('#reminders')
+    # польский: ср, пт 19:00, 20 мин
+    await p.click('[data-a="sc-add"]'); await p.wait_for_selector('form[data-form="sched"]')
+    await p.click('form[data-form="sched"] button[type=submit]'); await p.wait_for_selector('text=Выбери хотя бы один день')
+    await p.click('[data-a="sc-day"][data-id="3"]'); await p.click('[data-a="sc-day"][data-id="5"]')
+    await p.fill('input[name=time]', '19:00')
+    await c.shot('10-sched-editor')
+    await p.click('form[data-form="sched"] button[type=submit]'); await p.wait_for_selector('.sched')
+    # английский: вт, чт 18:30, 30 мин
+    await p.click('[data-a="sc-add"]'); await p.click('[data-a="sc-lang"][data-id="en"]')
+    await p.click('[data-a="sc-day"][data-id="2"]'); await p.click('[data-a="sc-day"][data-id="4"]')
+    await p.fill('input[name=time]', '18:30'); await p.click('[data-a="sc-min"][data-id="30"]')
+    await p.click('form[data-form="sched"] button[type=submit]'); await p.wait_for_selector('.sched li:nth-child(2)')
+    txt = await p.inner_text('.sched')
+    assert 'Английский' in txt and 'вт, чт · 30 мин' in txt and '18:30' in txt, txt
+    assert 'Польский' in txt and 'ср, пт · 20 мин' in txt and '19:00' in txt, txt
+    sch = await p.evaluate('S.settings.schedule'); assert [x['lang'] for x in sch] == ['en', 'pl'], sch
+    assert await p.evaluate('S.settings.tz') == 'Europe/Kaliningrad'
+    # без входа — подсказка
+    await p.click('[data-a="push-on"]'); await p.wait_for_selector('text=Сначала войди в аккаунт')
+    await p.fill('#au-email', 'a@x.ru'); await p.fill('#au-pass', 'secret1'); await p.click('form[data-form="signin"] button[type=submit]')
+    await p.wait_for_selector('text=Вход выполнен')
+    await p.click('[data-a="push-on"]'); await p.wait_for_selector('text=Уведомления включены')
+    assert await p.evaluate('__push.key') == 65
+    subs = getattr(c.backend, 'subs', {}); assert list(subs) == ['https://fcm.googleapis.com/fcm/send/XYZ'], subs
+    await p.click('[data-a="push-test"]'); assert await p.evaluate('__push.shown') == ['Английский — 30 мин']
+    await c.shot('10-settings-reminders')
+    await p.click('[data-a="push-off"]'); await p.wait_for_selector('[data-a="push-on"]'); assert not getattr(c.backend, 'subs', {})
+    # план на сегодня (среда — польский) на полке, переход по ?open=pl
+    await p.evaluate("S.settings.schedule.forEach(x=>x.days=[1,2,3,4,5,6,7]); save()")
+    await p.click('[data-a="tab"][data-id="shelf"]'); await p.wait_for_selector('.plan-item')
+    assert 'Польский' in await p.inner_text('.plan'), await p.inner_text('.plan')
+    await c.shot('10-plan-today')
+    await p.wait_for_timeout(500)
+    await p.goto(c.url + '?open=pl'); await p.wait_for_selector('.reader #rt w')
+    await c.check()
+
+async def c11_native_schedule(c):
+    c.init_script = "window.__native={sched:[]};window.Android={setPaging:()=>{},canSpeak:()=>false,speak:()=>{},setSchedule:j=>__native.sched.push(JSON.parse(j)),requestNotifications:()=>{__native.asked=1}};"
+    p = await c.open()
+    await import_book(p, 'sample.fb2')
+    await p.click('[data-a="tab"][data-id="settings"]')
+    assert 'ставит само приложение' in await p.inner_text('#reminders')
+    await p.click('[data-a="native-notif"]'); assert await p.evaluate('__native.asked') == 1
+    await p.click('[data-a="sc-add"]'); await p.click('[data-a="sc-day"][data-id="3"]'); await p.click('form[data-form="sched"] button[type=submit]')
+    await p.wait_for_timeout(500)
+    last = await p.evaluate('__native.sched[__native.sched.length-1]')
+    assert last['items'][0]['lang'] == 'pl' and last['items'][0]['days'] == [3], last
+    assert last['info']['pl']['book'] == 'Droga przez mgłę', last['info']
+    await c.check()
+
+CASES = [c01_empty_and_import, c02_read_tap_save, c03_chinese, c04_review, c05_errors_and_settings, c06_desktop, c07_sync_two_devices, c08_fallback, c09_eink_android, c10_schedule_push, c11_native_schedule]
 
 async def main():
     sel = sys.argv[1:]
@@ -440,7 +514,7 @@ async def main():
         for case in CASES:
             name = case.__name__
             if sel and not any(name.startswith(s) for s in sel): continue
-            c = Ctx(pw, browser, url, Claude(), Backend(), sync=name.startswith('c07'))
+            c = Ctx(pw, browser, url, Claude(), Backend(), sync=name.startswith(('c07', 'c10')))
             try:
                 await asyncio.wait_for(case(c), 90); ok += 1; print('PASS', name)
             except Exception as e:

@@ -1,6 +1,6 @@
 // Офлайн: оболочка приложения кэшируется при установке, библиотеки и шрифты — при первой загрузке.
 // Запросы к Supabase и Claude всегда идут в сеть.
-const VERSION = 'v2';
+const VERSION = 'v3';
 const SHELL = ['./', 'index.html', 'app.css', 'app.js', 'parse.js', 'config.js', 'manifest.webmanifest', 'icon.svg', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
 const CDN_HOSTS = ['cdn.jsdelivr.net', 'fonts.googleapis.com', 'fonts.gstatic.com'];
 
@@ -22,4 +22,21 @@ self.addEventListener('fetch', e => {
   if (CDN_HOSTS.includes(url.hostname)) {
     e.respondWith(caches.match(req).then(hit => hit || fetch(req).then(res => { const copy = res.clone(); caches.open('cdn-' + VERSION).then(c => c.put(req, copy)); return res; })));
   }
+});
+
+// Напоминания по расписанию (Web Push от функции remind в Supabase)
+self.addEventListener('push', e => {
+  let d = {};
+  try { d = e.data ? e.data.json() : {}; } catch (x) { d = { title: 'Между строк', body: e.data ? e.data.text() : '' }; }
+  e.waitUntil(self.registration.showNotification(d.title || 'Между строк', {
+    body: d.body || 'Время позаниматься.', icon: 'icon-192.png', badge: 'icon-192.png', tag: d.tag || 'mezhdu', renotify: true, data: { url: d.url || './' }
+  }));
+});
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  const url = new URL((e.notification.data && e.notification.data.url) || './', self.registration.scope).href;
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
+    for (const c of list) if (c.url.startsWith(self.registration.scope) && 'navigate' in c) return c.navigate(url).then(w => (w || c).focus());
+    return self.clients.openWindow(url);
+  }));
 });

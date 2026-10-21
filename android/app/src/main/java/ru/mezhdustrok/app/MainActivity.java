@@ -1,11 +1,13 @@
 package ru.mezhdustrok.app;
 
+import android.Manifest;
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.Intent;
 import android.graphics.Color;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.speech.tts.TextToSpeech;
 import android.view.KeyEvent;
@@ -90,7 +92,19 @@ public class MainActivity extends Activity {
         tts = new TextToSpeech(this, status -> ttsReady = status == TextToSpeech.SUCCESS);
 
         if (savedInstanceState != null) web.restoreState(savedInstanceState);
-        else web.loadUrl(APP_URL);
+        else web.loadUrl(urlFor(getIntent()));
+        Reminders.scheduleAll(this);
+    }
+
+    private static String urlFor(Intent intent) {
+        String lang = intent != null ? intent.getStringExtra("open") : null;
+        return lang != null && lang.matches("en|pl|zh") ? APP_URL + "&open=" + lang : APP_URL;
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        if (intent.getStringExtra("open") != null) web.loadUrl(urlFor(intent));
     }
 
     @Override
@@ -152,6 +166,14 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public boolean canSpeak() { return ttsReady; }
+
+        @JavascriptInterface
+        public void setSchedule(String json) { Reminders.save(getApplicationContext(), json); }
+
+        @JavascriptInterface
+        public void requestNotifications() {
+            if (Build.VERSION.SDK_INT >= 33) runOnUiThread(() -> requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 2));
+        }
 
         @JavascriptInterface
         public void speak(String text, String lang) {
