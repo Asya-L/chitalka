@@ -152,6 +152,7 @@ class Ctx:
         await self.ctx.route('https://en.wiktionary.org/**', self.free.wikt)
         if not self.sync:
             await self.ctx.route('**/config.js', lambda r: r.fulfill(status=200, content_type='application/javascript', body='window.APP_CONFIG={};'))
+        if getattr(self, 'init_script', None): await self.ctx.add_init_script(self.init_script)
         self.page = await self.ctx.new_page()
         self.page.on('console', lambda m: self.errors.append(m.text) if m.type == 'error' and 'net::ERR' not in m.text and 'Failed to load resource' not in m.text else None)
         if os.environ.get('TRACE2'):
@@ -399,7 +400,36 @@ async def c08_fallback(c):
     assert 'MyMemory' in await p.inner_text('.sheet')
     await c.check()
 
-CASES = [c01_empty_and_import, c02_read_tap_save, c03_chinese, c04_review, c05_errors_and_settings, c06_desktop, c07_sync_two_devices, c08_fallback]
+async def c09_eink_android(c):
+    # страница внутри APK: есть мост window.Android
+    c.init_script = "window.__native={paging:[],spoken:[]};window.Android={setPaging:b=>__native.paging.push(b),canSpeak:()=>true,speak:(t,l)=>__native.spoken.push([t,l])};"
+    p = await c.open(); await set_key(p)
+    assert await p.evaluate('document.documentElement.dataset.theme') == 'eink'
+    await import_book(p, 'sample.epub')
+    await c.shot('09-eink-shelf')
+    await p.click('.continue [data-a="open"].btn'); await p.wait_for_selector('.reader.paged #rt w')
+    assert await p.evaluate('__native.paging') == [True]
+    await c.shot('09-eink-reader')
+    top0 = await p.evaluate("document.getElementById('rs').scrollTop")
+    await p.click('[data-a="pg"][data-id="1"]'); top1 = await p.evaluate("document.getElementById('rs').scrollTop"); assert top1 > top0 + 300, (top0, top1)
+    await p.evaluate('einkPage(1)'); await p.keyboard.press('PageDown')    # кнопка громкости вызывает einkPage
+    for _ in range(40):
+        if await p.evaluate('R.ch') == 1: break
+        await p.evaluate('einkPage(1)')
+    assert await p.evaluate('R.ch') == 1, 'не перешли на следующую главу'
+    await p.evaluate('einkPage(-1)'); assert await p.evaluate('R.ch') == 0
+    # слово по-прежнему переводится касанием, озвучка идёт через Android
+    await p.locator('#rt w', has_text='brass').first.click(); await p.wait_for_selector('.w-tr')
+    await p.click('[data-a="w-speak"]'); assert await p.evaluate('__native.spoken') == [['brass', 'en-US']]
+    await c.shot('09-eink-word')
+    await p.go_back(); await p.wait_for_selector('.sheet', state='detached'); await p.go_back(); await p.wait_for_selector('.reader', state='detached')
+    assert await p.evaluate('__native.paging') == [True, False]
+    # выключить E-ink в настройках
+    await p.click('[data-a="tab"][data-id="settings"]'); await p.click('[data-a="eink"]')
+    assert await p.evaluate('document.documentElement.dataset.theme') != 'eink'
+    await c.check()
+
+CASES = [c01_empty_and_import, c02_read_tap_save, c03_chinese, c04_review, c05_errors_and_settings, c06_desktop, c07_sync_two_devices, c08_fallback, c09_eink_android]
 
 async def main():
     sel = sys.argv[1:]

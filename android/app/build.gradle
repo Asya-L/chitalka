@@ -1,0 +1,42 @@
+plugins {
+    id 'com.android.application'
+}
+
+def runNumber = (System.getenv('GITHUB_RUN_NUMBER') ?: '1').toInteger()
+
+android {
+    namespace 'ru.mezhdustrok.app'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'ru.mezhdustrok.app'
+        minSdk 24
+        targetSdk 34
+        versionCode runNumber
+        versionName "1.0.${runNumber}"
+    }
+
+    // Ключ подписи хранится в репозитории, чтобы новые версии ставились поверх старых.
+    // Приложение личное и ставится вручную; для публикации в магазинах нужен отдельный секретный ключ.
+    signingConfigs {
+        release {
+            storeFile file('release.p12')
+            storeType 'pkcs12'
+            storePassword 'mezhdu-strok'
+            keyAlias 'mezhdu'
+            keyPassword 'mezhdu-strok'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

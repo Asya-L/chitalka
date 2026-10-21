@@ -1,6 +1,6 @@
 // Офлайн: оболочка приложения кэшируется при установке, библиотеки и шрифты — при первой загрузке.
 // Запросы к Supabase и Claude всегда идут в сеть.
-const VERSION = 'v1';
+const VERSION = 'v2';
 const SHELL = ['./', 'index.html', 'app.css', 'app.js', 'parse.js', 'config.js', 'manifest.webmanifest', 'icon.svg', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
 const CDN_HOSTS = ['cdn.jsdelivr.net', 'fonts.googleapis.com', 'fonts.gstatic.com'];
 

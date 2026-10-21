@@ -149,8 +149,11 @@ function highlight(sentence, form, lang) {
   const re = lang === 'zh' ? new RegExp(f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) : new RegExp('(^|[^\\p{L}])(' + f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')(?![\\p{L}])', 'iu');
   return lang === 'zh' ? s.replace(re, m => '<b>' + m + '</b>') : s.replace(re, (m, a, b) => a + '<b>' + b + '</b>');
 }
+const NATIVE = window.Android && typeof window.Android.setPaging === 'function' ? window.Android : null;
 function speak(text, lang) {
-  if (!('speechSynthesis' in window) || !text) return;
+  if (!text) return;
+  if (NATIVE && NATIVE.canSpeak && NATIVE.canSpeak()) { try { NATIVE.speak(text, LANGS[lang].tts); } catch (e) { } return; }
+  if (!('speechSynthesis' in window)) return;
   try {
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text); u.lang = LANGS[lang].tts; u.rate = lang === 'zh' ? 0.8 : 0.92;
@@ -159,7 +162,12 @@ function speak(text, lang) {
     speechSynthesis.speak(u);
   } catch (e) { }
 }
-const canSpeak = 'speechSynthesis' in window;
+const canSpeak = 'speechSynthesis' in window || !!NATIVE;
+
+/* E-ink: настройка этого устройства, не синхронизируется. В приложении для Boox включена по умолчанию. */
+const EINK_LS = 'mezhdu-eink';
+let EINK = (() => { try { const v = localStorage.getItem(EINK_LS); if (v != null) return v === '1'; } catch (e) { } return /[?&]eink=1/.test(location.search) || !!NATIVE; })();
+function setEink(on) { EINK = on; try { localStorage.setItem(EINK_LS, on ? '1' : '0'); } catch (e) { } applyTheme(); if (R) { trackPosition(); renderReader(R.p); } render(); }
 
 /* ---------------- Claude ---------------- */
 class AIError extends Error { constructor(code, msg) { super(msg); this.code = code; } }
@@ -382,9 +390,9 @@ function toast(msg) {
 const darkMQ = window.matchMedia ? matchMedia('(prefers-color-scheme: dark)') : null;
 function applyTheme() {
   const t = S.settings.theme;
-  const act = t === 'auto' ? (darkMQ && darkMQ.matches ? 'night' : 'paper') : t;
+  const act = EINK ? 'eink' : t === 'auto' ? (darkMQ && darkMQ.matches ? 'night' : 'paper') : t;
   if (act === 'paper') document.documentElement.removeAttribute('data-theme'); else document.documentElement.dataset.theme = act;
-  const m = document.querySelector('meta[name="theme-color"]'); if (m) m.content = act === 'night' ? '#1C1814' : act === 'sepia' ? '#EADBC2' : '#F1EADF';
+  const m = document.querySelector('meta[name="theme-color"]'); if (m) m.content = act === 'eink' ? '#FFFFFF' : act === 'night' ? '#1C1814' : act === 'sepia' ? '#EADBC2' : '#F1EADF';
 }
 if (darkMQ && darkMQ.addEventListener) darkMQ.addEventListener('change', applyTheme);
 
@@ -512,6 +520,7 @@ async function openBook(id) {
   R = { id, c, ch: Math.min(pos.c || 0, c.chapters.length - 1), p: pos.p || 0, lang: b.lang };
   b.last = now(); b.u = now(); save(5000);
   openLayer('reader'); renderReader(R.p); startActivity();
+  if (NATIVE) try { NATIVE.setPaging(true); } catch (e) { }
 }
 function curBook() { return R && S.books[R.id]; }
 function renderPara(text, i, lang, saved, py) {
@@ -532,7 +541,7 @@ function renderReader(scrollToP) {
   const py = L === 'zh' && S.settings.pinyin && !!window.pinyinPro;
   const saved = savedKeys(L);
   const n = R.c.chapters.length;
-  $('#reader-root').innerHTML = `<div class="reader" role="dialog" aria-label="${esc(b.title)}">
+  $('#reader-root').innerHTML = `<div class="reader${EINK ? ' paged' : ''}" role="dialog" aria-label="${esc(b.title)}">
     <div class="r-top"><button class="iconbtn" data-a="r-close" aria-label="На полку">${I.back}</button>
       <div class="tt">${esc(b.title)}</div>
       <button class="iconbtn" data-a="r-menu" aria-label="Оглавление и вид текста">${I.menu}</button></div>
@@ -549,11 +558,13 @@ function renderReader(scrollToP) {
   const rs = $('#rs');
   if (scrollToP) { const el = rs.querySelector(`p[data-i="${scrollToP}"]`); if (el) rs.scrollTop = el.offsetTop - 12; }
   rs.addEventListener('scroll', onReaderScroll, { passive: true });
+  if (EINK) bindPaging(rs);
   updateFoot();
 }
 function updateFoot() {
   const b = curBook(); const el = $('#rf'); if (!el || !b) return;
-  el.innerHTML = `<span>${R.c.chapters.length > 1 ? `Глава ${R.ch + 1} из ${R.c.chapters.length}` : esc(b.title)}</span><div class="bar" aria-hidden="true"><i style="width:${Math.round((b.pct || 0) * 100)}%"></i></div><span>${pctLabel(b)}</span>`;
+  const pg = EINK ? ['<button class="btn pg" data-a="pg" data-id="-1" aria-label="Предыдущая страница">‹</button>', '<button class="btn pg" data-a="pg" data-id="1" aria-label="Следующая страница">›</button>'] : ['', ''];
+  el.innerHTML = pg[0] + `<span>${R.c.chapters.length > 1 ? `Глава ${R.ch + 1} из ${R.c.chapters.length}` : esc(b.title)}</span><div class="bar" aria-hidden="true"><i style="width:${Math.round((b.pct || 0) * 100)}%"></i></div><span>${pctLabel(b)}</span>` + pg[1];
 }
 let scrollT;
 function onReaderScroll() { act.last = now(); clearTimeout(scrollT); scrollT = setTimeout(trackPosition, 250); }
@@ -585,7 +596,39 @@ function setPos(c, p, atEnd) {
 function exitReader() {
   if (!R) return;
   trackPosition(); stopActivity();
+  if (NATIVE) try { NATIVE.setPaging(false); } catch (e) { }
   R = null; $('#reader-root').innerHTML = ''; save(300); render();
+}
+/* постраничное листание для E-ink: касание по краям, свайп, кнопки громкости (в приложении), стрелки */
+function pageTurn(d) {
+  if (!R || sheetOpen) return false;
+  const rs = $('#rs'); if (!rs) return false;
+  const lh = parseFloat(getComputedStyle($('#rt')).lineHeight) || 30;
+  const step = Math.max(80, rs.clientHeight - lh * 1.4);
+  act.last = now();
+  if (d > 0) {
+    if (rs.scrollTop + rs.clientHeight >= rs.scrollHeight - 4) { if (R.ch < R.c.chapters.length - 1) goChapter(R.ch + 1); else toast('Это конец книги'); return true; }
+    rs.scrollTop = Math.min(rs.scrollHeight, rs.scrollTop + step);
+  } else {
+    if (rs.scrollTop <= 2) { if (R.ch > 0) { goChapter(R.ch - 1); const r2 = $('#rs'); r2.scrollTop = r2.scrollHeight; } return true; }
+    rs.scrollTop = Math.max(0, rs.scrollTop - step);
+  }
+  return true;
+}
+window.einkPage = pageTurn;
+function bindPaging(rs) {
+  let sx = 0, sy = 0, st = 0;
+  rs.addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY; st = now(); });
+  rs.addEventListener('pointerup', e => {
+    const dx = e.clientX - sx, dy = e.clientY - sy;
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed) return;
+    if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy)) { pageTurn(dx < 0 ? 1 : -1); return; }
+    if (Math.abs(dy) > 60 && Math.abs(dy) > Math.abs(dx)) { pageTurn(dy < 0 ? 1 : -1); return; }
+    if (Math.abs(dx) < 10 && Math.abs(dy) < 10 && now() - st < 600 && !e.target.closest('w,button,a')) {
+      const w = rs.clientWidth; if (e.clientX < w * 0.3) pageTurn(-1); else if (e.clientX > w * 0.7) pageTurn(1);
+    }
+  });
 }
 function goChapter(c) {
   R.ch = c; R.p = 0; setPos(c, 0, false); renderReader(0); $('#rs').scrollTop = 0;
@@ -842,6 +885,8 @@ function renderSettings() {
     <div class="f">Мой уровень — от него зависят пояснения<div class="row" style="margin-top:6px">${Object.keys(LANGS).map(l => `<label style="display:flex;align-items:center;gap:8px;color:var(--ink)">${LANGS[l].ru}<select class="in" style="width:auto;min-height:38px;padding:6px 10px" data-a="set-level" data-id="${l}">${LANGS[l].levels.map(v => `<option${st.levels[l] === v ? ' selected' : ''}>${v}</option>`).join('')}</select></label>`).join('')}</div></div>
   </section>
   <section class="panel"><h2 style="margin-bottom:12px">Чтение</h2>
+    <div class="f">Экран электронной книги (E-ink)<div style="margin-top:5px" class="seg" role="group" aria-label="E-ink"><button data-a="eink" aria-pressed="${EINK}">${EINK ? 'Включён' : 'Выключен'}</button></div>
+      <p class="hint" style="margin:6px 0 0">Чёрное на белом без теней и анимаций, страницы листаются касанием по краю, свайпом, стрелками или кнопками громкости в приложении для Boox. Настройка этого устройства.</p></div>
     <div class="f">Тема<div style="margin-top:5px">${seg('theme', [['auto', 'Как в системе'], ['paper', 'Бумага'], ['sepia', 'Сепия'], ['night', 'Ночь']], st.theme, 'Тема')}</div></div>
     <div class="f">Размер текста: ${st.font}px<div style="margin-top:5px" class="seg" role="group" aria-label="Размер текста"><button data-a="fs" data-id="-1">A−</button><button data-a="fs" data-id="1">A+</button></div></div>
     <div class="f">Межстрочный интервал<div style="margin-top:5px">${seg('lh', [[1.45, 'Плотно'], [1.65, 'Обычно'], [1.9, 'Свободно']], st.lh, 'Интервал')}</div></div>
@@ -934,7 +979,7 @@ function onRemoteChange() {
   if (R) { if (!S.books[R.id] || S.books[R.id].del) { exitReaderHard(); return; } refreshHighlights(); updateFoot(); return; }
   if (!sheetOpen && !/INPUT|TEXTAREA|SELECT/.test((document.activeElement || {}).tagName || '')) render();
 }
-function exitReaderHard() { stopActivity(); R = null; $('#reader-root').innerHTML = ''; while (layers.length) layers.pop(); render(); }
+function exitReaderHard() { stopActivity(); if (NATIVE) try { NATIVE.setPaging(false); } catch (e) { } R = null; $('#reader-root').innerHTML = ''; while (layers.length) layers.pop(); render(); }
 function renderAccount() {
   let h = '<section class="panel" id="account"><h2 style="margin-bottom:12px">Синхронизация</h2>';
   if (!SYNC_READY) return h + '<p class="hint" style="margin:0">Синхронизация пока не настроена: в файле config.js нет адреса Supabase. Всё хранится в этом браузере.</p></section>';
@@ -1047,6 +1092,8 @@ document.addEventListener('click', e => {
     case 'r-close': closeLayer('reader'); break;
     case 'r-menu': readerMenu(); break;
     case 'r-ch': goChapter(+id); break;
+    case 'pg': pageTurn(+id); break;
+    case 'eink': setEink(!EINK); break;
     case 'r-goto': closeLayer('sheet'); setTimeout(() => goChapter(+id), 0); break;
     case 'fs': S.settings.font = Math.max(14, Math.min(30, S.settings.font + (+id))); setSetting('font', S.settings.font); break;
     case 'theme': setSetting('theme', id); break;
@@ -1102,6 +1149,10 @@ document.addEventListener('submit', e => {
   if (['signin', 'signup', 'forgot', 'newpass'].includes(k)) authSubmit(k);
 });
 document.addEventListener('keydown', e => {
+  if (R && EINK && !sheetOpen && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) {
+    if (['ArrowRight', 'ArrowDown', 'PageDown', ' '].includes(e.key)) { e.preventDefault(); pageTurn(1); return; }
+    if (['ArrowLeft', 'ArrowUp', 'PageUp'].includes(e.key)) { e.preventDefault(); pageTurn(-1); return; }
+  }
   if (e.key === 'Escape') { if (sheetOpen) closeLayer('sheet'); else if (RV) closeLayer('review'); else if (R) closeLayer('reader'); return; }
   if (RV && !sheetOpen && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) {
     if (!RV.show && (e.key === ' ' || e.key === 'Enter') && RV.q.length) { e.preventDefault(); RV.show = true; renderReview(); }

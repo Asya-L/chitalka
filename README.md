@@ -19,6 +19,7 @@
 - `config.js` — адрес проекта Supabase и публичный ключ
 - `schema.sql` — таблица `mezhdu_state` и закрытая корзина `books` с правилами доступа (уже выполнено в проекте)
 - `sw.js`, `manifest.webmanifest`, `icon*` — установка и офлайн
+- `android/` — приложение для Onyx Boox и других Android (WebView). APK собирается GitHub Actions и выкладывается в релиз «apk»: https://github.com/Asya-L/chitalka/releases/latest/download/mezhdu-strok.apk
 - `tests/e2e.py` — сквозные тесты (Playwright, моки Claude и Supabase)
 
 ## Тесты
