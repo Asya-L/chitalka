@@ -320,7 +320,12 @@ async def x14_goals_year(c):
     await p.click('[data-a="goal-add"]'); await p.click('[data-a="goal-type"][data-id="book"]'); await p.wait_for_selector('select[name=book]')
     await p.fill('input[name=due]', '2026-12-31'); await p.click('form[data-form="goal"] button[type=submit]')
     await p.wait_for_function("document.querySelectorAll('.goal-c').length===2")
-    await p.evaluate("(()=>{const kn=knownMap('pl');for(let i=0;i<25;i++)kn['qq'+i]=dnum()})()")
+    # знакомые при чтении слова не считаются — только добавленные в повторение и отработанные
+    await p.evaluate("(()=>{const kn=knownMap('pl');for(let i=0;i<25;i++)kn['qq'+i]=dnum();render()})()")
+    assert 'Цель достигнута' not in await p.inner_text('#goals')
+    await p.evaluate("(()=>{for(let i=0;i<22;i++){const id='pl:w'+i;S.words[id]={id,lang:'pl',lemma:'w'+i,forms:['w'+i],ctxs:[],created:now(),st:'learn',u:now(),srs:{due:now()+9*DAY,reps:i<20?3:1,lapses:0,ivl:i<19?9:2}}};S.words['pl:w0'].st='known';save();render()})()")
+    t = await p.inner_text('#goals'); assert '19 из 20 слов отработано' in t and 'ещё 3 в повторении' in t, t
+    await p.evaluate("S.words['pl:w19'].srs.ivl=8;render()")
     await p.click('[data-a="tab"][data-id="shelf"]'); await p.wait_for_selector('.goal-c.done')
     # прогноз: темп чтения по языку за 2 недели
     await p.evaluate("(()=>{const d=new Date();for(let i=1;i<=7;i++){const x=new Date(d);x.setDate(d.getDate()-i);(S.log[dayKey(x)]=S.log[dayKey(x)]||{})[DEV]={min:10,w_pl:400}};const b=Object.values(S.books)[0];b.last=now();b.read=100;b.words=10000;save();render()})()")

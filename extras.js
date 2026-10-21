@@ -446,27 +446,34 @@ const fmtDate = d => d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'lon
 function etaLabel(b) { const e = bookEta(b); return e ? 'дочитаешь ≈ ' + fmtDate(e.date) : ''; }
 function liveGoals() { return Object.values(S.goals || {}).filter(g => !g.del).sort((a, b) => a.at - b.at); }
 function goalProgress(g) {
-  if (g.type === 'words') { const now_ = knownCount(g.lang); const done = Math.max(0, now_ - g.start); return { done, total: g.n, frac: Math.min(1, done / g.n), text: `+${fmtNum(done)} из ${fmtNum(g.n)} знакомых слов` }; }
+  if (g.type === 'words') {
+    // считаются только слова, добавленные в повторение после постановки цели и отработанные:
+    // закреплены (следующее повторение не раньше чем через неделю) или отмечены «Уже знаю» после повторений
+    const ws = liveWords(g.lang).filter(w => (w.created || 0) >= (g.at || 0) && (w.srs.reps || 0) > 0);
+    const done = ws.filter(wordWorked).length, inWork = liveWords(g.lang).filter(w => (w.created || 0) >= (g.at || 0) && w.st === 'learn' && !wordWorked(w)).length;
+    return { done, total: g.n, frac: Math.min(1, done / g.n), text: `${fmtNum(done)} из ${fmtNum(g.n)} слов отработано${inWork ? ` · ещё ${fmtNum(inWork)} в повторении` : ''}` };
+  }
   const b = S.books[g.book]; if (!b || b.del) return { done: 0, total: 1, frac: 0, text: 'книга убрана с полки' };
   return { done: b.pct || 0, total: 1, frac: b.pct || 0, text: 'прочитано ' + pctLabel(b) + (etaLabel(b) ? ' · ' + etaLabel(b) : '') };
 }
+const wordWorked = w => !w.del && (w.srs.reps || 0) > 0 && (w.st === 'known' || (w.srs.ivl || 0) >= 7);
 function goalsHTML() {
   const gs = liveGoals();
   return `<section class="sec" id="goals"><div class="sec-h"><h2>Цели</h2><button class="btn ghost sm" data-a="goal-add">${I.plus}Новая цель</button></div>
     ${gs.length ? `<div class="goals">${gs.map(g => { const p = goalProgress(g); const due = g.due ? new Date(g.due) : null; const late = due && p.frac < 1 && due < new Date();
       return `<div class="goal-c${p.frac >= 1 ? ' done' : ''}"><div class="row" style="justify-content:space-between;flex-wrap:nowrap"><b>${esc(goalTitle(g))}</b><button class="btn ghost sm" data-a="goal-del" data-id="${esc(g.id)}" aria-label="Удалить цель">✕</button></div>
         <div class="bar" aria-hidden="true"><i style="width:${Math.round(p.frac * 100)}%"></i></div><p class="hint" style="margin:0">${p.frac >= 1 ? 'Цель достигнута! ' : ''}${esc(p.text)}${due ? ` · до ${fmtDate(due)}${late ? ' — срок прошёл' : ''}` : ''}</p></div>`; }).join('')}</div>`
-    : '<p class="hint" style="margin:0">Например: «+500 знакомых польских слов к концу цикла» или «дочитать книгу до декабря».</p>'}
+    : '<p class="hint" style="margin:0">Например: «отработать 200 польских слов к концу цикла» или «дочитать книгу до декабря».</p>'}
   </section>`;
 }
-function goalTitle(g) { return g.type === 'words' ? `${LANGS[g.lang].ru}: +${fmtNum(g.n)} слов` : `Дочитать «${(S.books[g.book] || {}).title || 'книгу'}»`; }
+function goalTitle(g) { return g.type === 'words' ? `${LANGS[g.lang].ru}: отработать ${fmtNum(g.n)} слов` : `Дочитать «${(S.books[g.book] || {}).title || 'книгу'}»`; }
 function goalEditor() {
   const books = liveBooks();
   const d = goalEditor.d = goalEditor.d || { type: 'words', lang: (books[0] || {}).lang || 'pl', n: 500, book: (books[0] || {}).id || '', due: '' };
   showSheet(`<h2 style="margin-bottom:12px">Новая цель</h2><form data-form="goal">
     <div class="f">Что<div class="seg" style="margin-top:6px" role="group" aria-label="Тип цели"><button type="button" data-a="goal-type" data-id="words" aria-pressed="${d.type === 'words'}">Знакомые слова</button><button type="button" data-a="goal-type" data-id="book" aria-pressed="${d.type === 'book'}"${books.length ? '' : ' disabled'}>Дочитать книгу</button></div></div>
     ${d.type === 'words' ? `<div class="f">Язык<div class="seg" style="margin-top:6px" role="group" aria-label="Язык">${Object.keys(LANGS).map(l => `<button type="button" data-a="goal-lang" data-id="${l}" aria-pressed="${d.lang === l}">${LANGS[l].ru}</button>`).join('')}</div></div>
-      <label class="f">Сколько новых знакомых слов<input class="in" type="number" name="n" min="10" step="10" value="${d.n}"></label>`
+      <label class="f">Сколько слов отработать<span class="hint" style="display:block;font-weight:400">Считаются слова, которые ты добавишь в повторение и закрепишь: следующее повторение не раньше чем через неделю.</span><input class="in" type="number" name="n" min="10" step="10" value="${d.n}"></label>`
     : `<label class="f">Книга<select class="in" name="book">${books.map(b => `<option value="${b.id}"${b.id === d.book ? ' selected' : ''}>${esc(b.title)}</option>`).join('')}</select></label>`}
     <label class="f">Срок (необязательно)<input class="in" type="date" name="due" value="${esc(d.due)}"></label>
     <div class="row"><button class="btn primary" type="submit">Поставить цель</button><button class="btn ghost" type="button" data-a="sheet-close">Отмена</button></div></form>`, { center: true, label: 'Новая цель', onClose: () => { goalEditor.d = null; } });
