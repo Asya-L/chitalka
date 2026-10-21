@@ -51,6 +51,27 @@ class Claude:
             txt = 'Вот ответ:\n' + json.dumps({'lemma': term.lower() if not zh else term, 'pos': 'сущ.', 'tr': 'перевод:' + term, 'alt': 'ещё значение', 'note': 'пояснение формы', 'pinyin': 'shū' if zh else '', 'hsk': '1' if zh else ''}, ensure_ascii=False)
         await route.fulfill(status=200, content_type='application/json', body=json.dumps({'content': [{'type': 'text', 'text': txt}]}))
 
+# ---------------------------------------------------------------- mock free translators
+class Free:
+    def __init__(self): self.google_down = False; self.calls = []
+    async def google(self, route):
+        q = parse_qs(urlparse(route.request.url).query); self.calls.append(('g', q['q'][0]))
+        if self.google_down: return await route.fulfill(status=429, body='')
+        text = q['q'][0]
+        body = [[['гугл:' + text, text, None, None, 10]], [['существительное', ['вариант1', 'вариант2']]] if ' ' not in text else None, q['sl'][0]]
+        await route.fulfill(status=200, content_type='application/json', headers={'access-control-allow-origin': '*'}, body=json.dumps(body, ensure_ascii=False))
+    async def mymemory(self, route):
+        q = parse_qs(urlparse(route.request.url).query); self.calls.append(('m', q['q'][0]))
+        await route.fulfill(status=200, content_type='application/json', headers={'access-control-allow-origin': '*'}, body=json.dumps({'responseData': {'translatedText': 'мм:' + q['q'][0]}, 'quotaFinished': False}, ensure_ascii=False))
+    async def wikt(self, route):
+        w = urlparse(route.request.url).path.rsplit('/', 1)[1]
+        from urllib.parse import unquote
+        w = unquote(w); self.calls.append(('w', w))
+        if w == 'ścieżką':
+            body = {'pl': [{'partOfSpeech': 'Noun', 'language': 'Polish', 'definitions': [{'definition': '<span class="form-of-definition">instrumental singular of <a href="/wiki/ścieżka">ścieżka</a></span>'}]}]}
+            return await route.fulfill(status=200, content_type='application/json', headers={'access-control-allow-origin': '*'}, body=json.dumps(body))
+        await route.fulfill(status=404, body='{}', headers={'access-control-allow-origin': '*'})
+
 # ---------------------------------------------------------------- mock Supabase
 class Backend:
     def __init__(self):
@@ -125,6 +146,10 @@ class Ctx:
         await self.ctx.route(re.compile(r'https://fonts\.(googleapis|gstatic)\.com/.*'), lambda r: r.abort())
         await self.ctx.route('https://api.anthropic.com/**', self.claude.handle)
         await self.ctx.route(SB + '/**', self.backend.handle)
+        self.free = getattr(self, 'free', None) or Free()
+        await self.ctx.route('https://translate.googleapis.com/**', self.free.google)
+        await self.ctx.route('https://api.mymemory.translated.net/**', self.free.mymemory)
+        await self.ctx.route('https://en.wiktionary.org/**', self.free.wikt)
         if not self.sync:
             await self.ctx.route('**/config.js', lambda r: r.fulfill(status=200, content_type='application/javascript', body='window.APP_CONFIG={};'))
         self.page = await self.ctx.new_page()
@@ -280,9 +305,10 @@ async def c05_errors_and_settings(c):
     p = await c.open()
     await import_book(p, 'sample.epub')
     await p.click('.continue [data-a="open"].btn'); await p.wait_for_selector('#rt w')
-    await p.locator('#rt w').first.click(); await p.wait_for_selector('[data-a="goto-key"]')
-    await p.click('[data-a="goto-key"]'); await p.wait_for_selector('input[name="key"]')
-    assert await p.evaluate('!document.querySelector(".reader")')
+    await p.locator('#rt w').first.click(); await p.wait_for_selector('.w-tr')
+    assert 'гугл:' in await p.inner_text('.w-tr')     # без ключа — простой перевод
+    await p.go_back(); await p.wait_for_selector('.sheet', state='detached'); await p.go_back(); await p.wait_for_selector('.reader', state='detached')
+    await p.click('[data-a="tab"][data-id="settings"]'); await p.wait_for_selector('input[name="key"]')
     c.claude.fail = 401
     await p.fill('input[name=key]', 'sk-bad'); await p.click('form[data-form="key"] button[type=submit]')
     await p.wait_for_selector('text=Ключ Claude API не подходит')
@@ -343,7 +369,37 @@ async def c07_sync_two_devices(c):
     await c2.check(); await c2.close()
     await c.check()
 
-CASES = [c01_empty_and_import, c02_read_tap_save, c03_chinese, c04_review, c05_errors_and_settings, c06_desktop, c07_sync_two_devices]
+async def c08_fallback(c):
+    p = await c.open()
+    await import_book(p, 'sample.fb2')
+    await p.click('.continue [data-a="open"].btn'); await p.wait_for_selector('#rt w')
+    # 1) без ключа: Google + Викисловарь
+    await p.locator('#rt p[data-i="0"] w', has_text='ścieżką').first.click(); await p.wait_for_selector('.w-tr')
+    txt = await p.inner_text('.sheet')
+    assert 'гугл:ścieżką' in txt and 'ścieżka' in txt and 'творительный падеж ед. ч.' in txt and 'Google Переводчик' in txt, txt
+    assert 'гугл:ścieżka (нач. форма)' in txt, txt
+    await c.shot('08-fallback-word')
+    await p.click('[data-a="w-sent"]'); await p.wait_for_selector('.w-ctxtr')
+    assert 'гугл:Wiedźmin szedł' in await p.inner_text('.w-ctxtr')
+    await p.click('[data-a="w-save"]'); await p.wait_for_selector('[data-a="w-known"]')
+    w = await p.evaluate('Object.values(S.words)[0]'); assert w['lemma'] == 'ścieżka' and w['src'] == 'basic', w
+    await p.go_back(); await p.wait_for_selector('.sheet', state='detached')
+    # 2) ключ есть, но Claude перегружен — всё равно перевод + причина
+    await set_key(p); c.claude.fail = 529
+    await p.locator('#rt p[data-i="0"] w', has_text='mgła').first.click(); await p.wait_for_selector('.w-tr')
+    txt = await p.inner_text('.sheet'); assert 'гугл:mgła' in txt and 'Claude недоступен' in txt and 'перегружен' in txt, txt
+    # «Спросить Claude ещё раз», когда он ожил
+    c.claude.fail = None
+    await p.click('[data-a="w-retry"]'); await p.wait_for_selector('text=перевод:mgła')
+    await p.go_back(); await p.wait_for_selector('.sheet', state='detached')
+    # 3) Google недоступен — MyMemory
+    await p.evaluate("localStorage.removeItem('mezhdu-claude-key')"); c.free.google_down = True
+    await p.locator('#rt p[data-i="0"] w', has_text='powoli').first.click(); await p.wait_for_selector('.w-tr')
+    assert 'мм:powoli' in await p.inner_text('.w-tr')
+    assert 'MyMemory' in await p.inner_text('.sheet')
+    await c.check()
+
+CASES = [c01_empty_and_import, c02_read_tap_save, c03_chinese, c04_review, c05_errors_and_settings, c06_desktop, c07_sync_two_devices, c08_fallback]
 
 async def main():
     sel = sys.argv[1:]

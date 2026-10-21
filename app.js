@@ -205,7 +205,79 @@ Reply with JSON only, no other text:
  "pinyin": "${o.lang === 'zh' ? 'pinyin with tone marks for the lemma' : ''}",
  "hsk": "${o.lang === 'zh' ? 'HSK level 1–6 of the lemma if it is in the HSK lists, otherwise empty string' : ''}"}`;
 }
+/* ---------------- перевод без Claude ---------------- */
+// Цепочка: Google Translate (без ключа) → MyMemory; начальная форма и падеж — из английского Викисловаря.
+const GT_LANG = { en: 'en', pl: 'pl', zh: 'zh-CN' };
+async function fetchJSON(url, ms) {
+  const ac = new AbortController(); const t = setTimeout(() => ac.abort(), ms || 7000);
+  try { const r = await fetch(url, { signal: ac.signal }); if (!r.ok) throw new Error('HTTP ' + r.status); return await r.json(); }
+  finally { clearTimeout(t); }
+}
+const looksTarget = s => S.settings.target === 'ru' ? /[а-яё]/i.test(s) : /[a-z]/i.test(s) && !/[а-яё\u3400-\u9fff]/i.test(s);
+async function googleTr(text, lang) {
+  const j = await fetchJSON('https://translate.googleapis.com/translate_a/single?client=gtx&sl=' + GT_LANG[lang] + '&tl=' + S.settings.target + '&dt=t&dt=bd&dt=rm&q=' + encodeURIComponent(text));
+  const parts = j[0] || [];
+  const tr = parts.filter(x => x && typeof x[0] === 'string').map(x => x[0]).join('').trim();
+  const rm = parts.find(x => x && x[0] == null && x[3]);
+  const alt = [], pos = [];
+  for (const b of (j[1] || [])) { if (b[0]) pos.push(b[0]); for (const w of (b[1] || [])) if (w && w.toLowerCase() !== tr.toLowerCase() && !alt.includes(w)) alt.push(w); }
+  if (!tr) throw new Error('empty');
+  return { tr, alt: alt.slice(0, 4).join(', '), pos: pos[0] || '', py: rm ? rm[3] : '' };
+}
+async function myMemoryTr(text, lang) {
+  const j = await fetchJSON('https://api.mymemory.translated.net/get?q=' + encodeURIComponent(text) + '&langpair=' + GT_LANG[lang] + '|' + S.settings.target);
+  const tr = j && j.responseData && String(j.responseData.translatedText || '').trim();
+  if (!tr || j.quotaFinished || !looksTarget(tr) || /MYMEMORY WARNING/i.test(tr)) throw new Error('mymemory');
+  return { tr, alt: '', pos: '', py: '' };
+}
+async function basicTr(text, lang) {
+  try { return Object.assign(await googleTr(text, lang), { via: 'Google Переводчик' }); }
+  catch (e) { return Object.assign(await myMemoryTr(text, lang), { via: 'MyMemory' }); }
+}
+const GRAM_RU = { nominative: 'именительный', genitive: 'родительный', dative: 'дательный', accusative: 'винительный', instrumental: 'творительный', locative: 'предложный', vocative: 'звательный', singular: 'ед. ч.', plural: 'мн. ч.', masculine: 'муж. р.', feminine: 'жен. р.', neuter: 'ср. р.', virile: 'муж.-личн.', nonvirile: 'не муж.-личн.', 'first-person': '1-е лицо', 'second-person': '2-е лицо', 'third-person': '3-е лицо', present: 'настоящее', past: 'прошедшее', future: 'будущее', tense: 'время', imperative: 'повелительное', conditional: 'условное', infinitive: 'инфинитив', participle: 'причастие', gerund: 'деепричастие', perfective: 'сов. вид', imperfective: 'несов. вид', comparative: 'сравнительная степень', superlative: 'превосходная степень', plural_of: 'мн. ч.', inflection: 'форма', 'simple past': 'простое прошедшее', 'past participle': 'причастие прошедшего времени', 'present participle': 'причастие настоящего времени', and: 'и', of: '', 'form': 'форма', case: 'падеж' };
+const POS_RU = { noun: 'сущ.', verb: 'гл.', adjective: 'прил.', adverb: 'нареч.', pronoun: 'мест.', preposition: 'предл.', conjunction: 'союз', particle: 'частица', numeral: 'числ.', classifier: 'счётное слово', interjection: 'межд.', determiner: 'определитель', 'proper noun': 'имя собств.', phrase: 'фраза', 'существительное': 'сущ.', 'глагол': 'гл.', 'прилагательное': 'прил.', 'наречие': 'нареч.', 'местоимение': 'мест.', 'предлог': 'предл.' };
+const posRu = p => S.settings.target === 'ru' ? (POS_RU[String(p).toLowerCase()] || p) : p;
+async function wiktForm(term, lang) {
+  const key = { en: 'en', pl: 'pl', zh: 'zh' }[lang];
+  const w = lang === 'zh' ? term : term.toLowerCase();
+  const j = await fetchJSON('https://en.wiktionary.org/api/rest_v1/page/definition/' + encodeURIComponent(w), 5000);
+  const entries = j[key] || [];
+  for (const e of entries) for (const d of (e.definitions || [])) {
+    const html = d.definition || '';
+    if (/form-of-definition/.test(html)) {
+      const div = document.createElement('div'); div.innerHTML = html;
+      const text = div.textContent.replace(/\s+/g, ' ').trim();
+      const m = text.match(/^(.*?)\s+of\s+([^\s:;,(]+)/i);
+      if (m) {
+        let g = m[1].toLowerCase().replace(/\(.*?\)/g, '');
+        if (S.settings.target === 'ru') { g = g.split(/[\s/]+/).map(x => GRAM_RU[x] != null ? GRAM_RU[x] : x).filter(Boolean).join(' '); if (/творит|родит|дател|винит|именит|предлож|звател/.test(g) && !/падеж/.test(g)) g = g.replace(/(именительный|родительный|дательный|винительный|творительный|предложный|звательный)/, '$1 падеж'); }
+        return { lemma: m[2], gram: g.trim(), pos: e.partOfSpeech || '' };
+      }
+    }
+  }
+  return entries[0] ? { lemma: '', gram: '', pos: entries[0].partOfSpeech || '' } : null;
+}
+async function basicLookup(o) {
+  const ck = ['B', o.lang, S.settings.target, o.term].join('|');
+  const hit = await idb.get('tr', ck).catch(() => null); if (hit) return hit;
+  const single = !/\s/.test(o.term.trim()) && (o.lang !== 'zh' || o.term.length <= 4);
+  const [t, wf] = await Promise.all([basicTr(o.term, o.lang), single ? wiktForm(o.term, o.lang).catch(() => null) : Promise.resolve(null)]);
+  const r = { lemma: (wf && wf.lemma) || o.term, pos: posRu((wf && wf.pos) || t.pos || ''), tr: t.tr, alt: t.alt, note: '', py: '', hsk: '', src: 'basic', via: t.via };
+  if (wf && wf.lemma && wf.lemma.toLowerCase() !== o.term.toLowerCase()) {
+    r.note = (S.settings.target === 'ru' ? 'Форма слова «' + wf.lemma + '»' : 'Form of “' + wf.lemma + '”') + (wf.gram ? ': ' + wf.gram : ''); if (!/\.$/.test(r.note)) r.note += '.';
+    try { const lt = await basicTr(wf.lemma, o.lang); if (lt.tr && lt.tr.toLowerCase() !== r.tr.toLowerCase()) r.alt = [lt.tr + (S.settings.target === 'ru' ? ' (нач. форма)' : ' (base form)'), r.alt].filter(Boolean).join(', '); } catch (e) { }
+  }
+  if (o.lang === 'zh') r.py = pinyinOf(r.lemma) || t.py;
+  idb.put('tr', ck, r).catch(() => { });
+  return r;
+}
+
 async function lookup(o, force) {
+  if (!getKey()) { o.aiErr = ''; return basicLookup(o); }
+  try { const r = await aiLookup(o, force); o.aiErr = ''; return r; }
+  catch (e) { o.aiErr = e.message; return basicLookup(o); }
+}
+async function aiLookup(o, force) {
   const ck = [o.lang, S.settings.target, S.settings.levels[o.lang], o.term, o.ctx].join('|');
   if (!force) { const hit = await idb.get('tr', ck).catch(() => null); if (hit) return hit; }
   const txt = await askClaude(lookupPrompt(o), 400);
@@ -220,7 +292,9 @@ async function lookup(o, force) {
 async function translateSentence(text, lang) {
   const ck = ['S', lang, S.settings.target, text].join('|');
   const hit = await idb.get('tr', ck).catch(() => null); if (hit) return hit;
-  const r = await askClaude(`Translate this sentence from a ${LANG_EN[lang]} book into natural ${TARGETS[S.settings.target].en}. Reply with the translation only.\n\n${text}`, 500);
+  let r;
+  if (getKey()) { try { r = await askClaude(`Translate this sentence from a ${LANG_EN[lang]} book into natural ${TARGETS[S.settings.target].en}. Reply with the translation only.\n\n${text}`, 500); } catch (e) { r = null; } }
+  if (!r) { try { r = (await basicTr(text, lang)).tr; } catch (e) { throw new Error(navigator.onLine === false ? 'Нет интернета — перевод предложения недоступен.' : 'Не получилось перевести предложение: сервисы перевода не отвечают.'); } return r; }
   idb.put('tr', ck, r).catch(() => { });
   return r;
 }
@@ -248,7 +322,7 @@ function saveWord(o, st) {
   if (w.del) { w.del = false; w.created = now(); w.srs = { due: now(), ivl: 0, ease: 2.5, reps: 0, lapses: 0 }; w.ctxs = []; }
   const k = keyOf(o.term, o.lang);
   if (!w.forms.includes(k)) w.forms.push(k);
-  if (d.tr) { w.tr = d.tr; w.alt = d.alt; w.pos = d.pos; w.note = d.note; w.py = d.py; w.hsk = d.hsk; }
+  if (d.tr && !(d.src === 'basic' && w.tr && w.src !== 'basic')) { w.tr = d.tr; w.alt = d.alt; w.pos = d.pos; w.note = d.note; w.py = d.py; w.hsk = d.hsk; w.src = d.src || 'claude'; }
   if (ctx && !w.ctxs.some(c => c.s === ctx.s)) { w.ctxs.unshift(ctx); w.ctxs = w.ctxs.slice(0, 5); }
   w.st = st || 'learn'; w.u = now();
   if (isNew && w.st === 'learn') bump('saved', 1);
@@ -343,7 +417,7 @@ function renderShelf() {
       <p>Добавь книгу на английском, польском или китайском. Нажимаешь на незнакомое слово — видишь перевод именно в этом предложении и сохраняешь его. Потом слова повторяются карточками с тем же предложением из книги.</p>
       <p class="hint">Подходят файлы EPUB, FB2 и TXT.</p>
       <div class="row" style="justify-content:center;margin-top:18px"><button class="btn primary" data-a="add">${I.plus}Добавить книгу</button></div>
-      ${!getKey() ? `<p class="hint" style="margin-top:22px">Для перевода понадобится ключ Claude API — его можно вписать в <a href="#" data-a="tab" data-id="settings">настройках</a>.</p>` : ''}
+      ${!getKey() ? `<p class="hint" style="margin-top:22px">Перевод работает сразу. С ключом Claude API он будет точнее — с учётом предложения и с пояснениями. Ключ вписывается в <a href="#" data-a="tab" data-id="settings">настройках</a>.</p>` : ''}
     </div>`;
   const cur = books.find(b => b.last) || books[0];
   const langs = [...new Set(books.map(b => b.lang))];
@@ -549,14 +623,14 @@ function openWord(o) {
   CUR = o;
   const w = findWord(o.lang, o.term);
   if (w && w.tr) { o.data = { lemma: w.lemma, pos: w.pos, tr: w.tr, alt: w.alt, note: w.note, py: w.py, hsk: w.hsk }; o.state = 'ok'; o.fromSaved = true; }
-  else { o.state = getKey() ? 'loading' : 'nokey'; }
+  else { o.state = 'loading'; }
   showSheet(wordHTML(o), { label: 'Слово «' + o.term + '»' });
   if (o.state === 'loading') runLookup(o, false);
 }
 async function runLookup(o, force) {
   o.state = 'loading'; o.err = ''; if (CUR === o) updateSheet(wordHTML(o));
   try { o.data = await lookup(o, force); o.state = 'ok'; o.fromSaved = false; }
-  catch (e) { o.state = e.code === 'nokey' ? 'nokey' : 'err'; o.err = e.message; }
+  catch (e) { o.state = 'err'; o.err = navigator.onLine === false ? 'Нет интернета. Перевод появится, когда вернётся связь; сохранённые слова доступны и без неё.' : 'Не получилось перевести: ни Claude, ни запасные сервисы перевода не ответили. Попробуй ещё раз чуть позже.'; }
   if (CUR === o) updateSheet(wordHTML(o));
 }
 function wordHTML(o) {
@@ -574,10 +648,11 @@ function wordHTML(o) {
       <div class="w-tr">${esc(d.tr || '—')}</div>
       ${d.alt ? `<div class="w-alt">Ещё: ${esc(d.alt)}</div>` : ''}
       ${d.note ? `<div class="w-note">${esc(d.note)}</div>` : ''}
+      ${d.src === 'basic' ? `<p class="hint" style="margin:10px 0 0">Простой перевод через ${esc(d.via || 'переводчик')}, без учёта предложения.${o.aiErr ? ' Claude недоступен: ' + esc(o.aiErr) : getKey() ? '' : ' С ключом Claude будет перевод в контексте и пояснения.'}</p>${getKey() ? '<button class="btn ghost sm" data-a="w-retry" style="padding-left:0">Спросить Claude ещё раз</button>' : ''}` : ''}
       ${o.fromSaved ? `<button class="btn ghost sm" data-a="w-retr" style="margin-top:6px;padding-left:0">Перевести в этом предложении</button>` : ''}`;
   }
   const ctx = o.ctx ? `<div class="w-ctx${L === 'zh' ? ' zh' : ''}" lang="${L}">${highlight(o.ctx, o.term, L)}</div>
-    ${o.sentTr ? `<div class="w-ctxtr">${esc(o.sentTr)}</div>` : o.sentBusy ? '<div class="skeleton" style="width:70%"></div>' : o.sentErr ? `<div class="formmsg">${esc(o.sentErr)}</div>` : (getKey() ? `<button class="btn ghost sm" data-a="w-sent" style="padding-left:0">Перевести предложение</button>` : '')}` : '';
+    ${o.sentTr ? `<div class="w-ctxtr">${esc(o.sentTr)}</div>` : o.sentBusy ? '<div class="skeleton" style="width:70%"></div>' : o.sentErr ? `<div class="formmsg">${esc(o.sentErr)}</div>` : `<button class="btn ghost sm" data-a="w-sent" style="padding-left:0">Перевести предложение</button>`}` : '';
   const acts = o.state === 'ok' ? `<div class="w-act">
       ${saved ? `<button class="btn" data-a="w-known">Уже знаю</button><button class="btn ghost danger" data-a="w-del">Убрать из слов</button>`
       : `<button class="btn primary" data-a="w-save">${known ? 'Снова учить' : 'Учить это слово'}</button>${known ? '' : '<button class="btn" data-a="w-knownnew">Знаю</button>'}`}
@@ -762,7 +837,7 @@ function renderSettings() {
     <form data-form="key"><label class="f">Ключ Claude API<input class="in" name="key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-…" value="${esc(key)}"></label>
       <div class="row"><button class="btn primary" type="submit">Сохранить ключ</button>${key ? '<button class="btn" type="button" data-a="key-test">Проверить</button><button class="btn ghost danger" type="button" data-a="key-del">Удалить ключ</button>' : ''}</div>
       ${keyMsg ? `<p class="${/не|ошиб/i.test(keyMsg) ? 'formmsg' : 'notice'}" role="status" style="margin-top:10px">${esc(keyMsg)}</p>` : ''}
-      <p class="hint" style="margin-top:10px">Ключ хранится только в этом браузере и не синхронизируется — на телефоне его нужно вписать отдельно. Создать ключ: console.anthropic.com → API Keys.</p></form>
+      <p class="hint" style="margin-top:10px">Ключ хранится только в этом браузере и не синхронизируется — на телефоне его нужно вписать отдельно. Создать ключ: console.anthropic.com → API Keys. Без ключа или если Claude не отвечает, слова переводятся через Google Переводчик или MyMemory — проще и без учёта предложения.</p></form>
     <label class="f" style="margin-top:6px">Модель<select class="in" data-a="set-model">${MODELS.map(m => `<option value="${m.id}"${st.model === m.id ? ' selected' : ''}>${m.name}</option>`).join('')}</select></label>
     <div class="f">Мой уровень — от него зависят пояснения<div class="row" style="margin-top:6px">${Object.keys(LANGS).map(l => `<label style="display:flex;align-items:center;gap:8px;color:var(--ink)">${LANGS[l].ru}<select class="in" style="width:auto;min-height:38px;padding:6px 10px" data-a="set-level" data-id="${l}">${LANGS[l].levels.map(v => `<option${st.levels[l] === v ? ' selected' : ''}>${v}</option>`).join('')}</select></label>`).join('')}</div></div>
   </section>
