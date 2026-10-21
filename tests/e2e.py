@@ -42,15 +42,36 @@ class Claude:
         if self.fail:
             return await route.fulfill(status=self.fail, content_type='application/json', body=json.dumps({'error': {'message': 'invalid x-api-key'}}))
         assert h.get('x-api-key') and h.get('anthropic-dangerous-direct-browser-access') == 'true', 'headers'
-        prompt = body['messages'][0]['content']
-        if self.garbage and not prompt.startswith('Reply with'): txt = 'Извините, я не могу.'
+        prompt = body['messages'][-1]['content'] if not body.get('system') else ''
+        J = lambda o: json.dumps(o, ensure_ascii=False)
+        if body.get('system'):
+            self.chat = getattr(self, 'chat', 0) + 1
+            txt = 'To ciekawe! A co myślisz o głównym bohaterze?\n✎ Lubię tę książkę — «książka» в винительном падеже: «tę książkę».'
+        elif self.garbage and not prompt.startswith('Reply with'): txt = 'Извините, я не могу.'
         elif prompt.startswith('Reply with: ok'): txt = 'ok'
         elif prompt.startswith('Translate this sentence'): txt = 'Старый часовщик каждое утро заводил латунные шестерёнки.'
+        elif prompt.startswith('Translate these'):
+            n = len(re.findall(r'^\d+\. «', prompt, re.M)); txt = J({'tr': ['кл%d' % i for i in range(n)], 'py': ['py%d' % i for i in range(n)]})
+        elif 'is about to read this book chapter' in prompt:
+            txt = J({'words': [{'w': 'mgła', 'tr': 'туман'}, {'w': 'ścieżką', 'tr': 'тропой'}, {'w': 'brass', 'tr': 'латунь'}, {'w': 'gears', 'tr': 'шестерни'}]})
+        elif prompt.startswith('Summarize this book chapter'): txt = 'Wiedźmin szedł przez las. Ktoś na niego czekał.'
+        elif prompt.startswith('Write 3 short comprehension questions'): txt = J({'questions': ['Kto szedł przez las?', 'Co unosiło się nad ścieżką?', 'Kto czekał?']})
+        elif 'Create 5 short' in prompt: txt = J({'sentences': ['Я иду через лес.', 'Туман над тропой.', 'Кто-то ждёт.', 'Он не знал.', 'Ведьмак шёл медленно.']})
+        elif 'keeps forgetting' in prompt: txt = 'Запомни: «mgła» похоже на «мгла».'
+        elif prompt.startswith('Here are sentences from books'):
+            txt = J({'topics': [{'title': 'Творительный падеж', 'explain': 'Отвечает на вопрос «чем?».', 'examples': [{'s': 'nad ścieżką', 'tr': 'над тропой'}]}, {'title': 'Прошедшее время', 'explain': 'Форма -ł/-ła.', 'examples': []}], 'roadmap': [{'title': 'Творительный падеж', 'seen': True}, {'title': 'Условное наклонение', 'seen': False}]})
+        elif ('learner' in prompt and ('answers' in prompt or 'retold' in prompt or 'wrote this short text' in prompt or 'translated' in prompt)):
+            n = max(1, len(re.findall(r'^(?:A\d+:|\s+→)', prompt, re.M)))
+            txt = J({'results': [{'ok': True if i % 2 == 0 else 'partial', 'feedback': 'отзыв %d' % i, 'corrected': 'Poprawiona odpowiedź %d.' % i} for i in range(n)],
+                     'mistakes': [{'wrong': 'szedłem przez lasu', 'right': 'szedłem przez las', 'rule': 'после przez — винительный'}], 'summary': 'Хорошо, но следи за падежами.'})
         else:
             term = re.search(r'tapped this (?:word|phrase): «(.+?)»', prompt).group(1)
-            zh = 'Chinese' in prompt
+            zh = 'Chinese' in prompt; pl = 'Polish' in prompt
             LEM = {'mgłę': 'mgła', 'mgle': 'mgła'}
-            txt = 'Вот ответ:\n' + json.dumps({'lemma': LEM.get(term, term.lower()) if not zh else term, 'pos': 'сущ.', 'tr': 'перевод:' + term, 'alt': 'ещё значение', 'note': 'пояснение формы', 'pinyin': 'shū' if zh else '', 'hsk': '1' if zh else ''}, ensure_ascii=False)
+            d = {'lemma': LEM.get(term, term.lower()) if not zh else term, 'pos': 'сущ.', 'tr': 'перевод:' + term, 'alt': 'ещё значение', 'note': 'пояснение формы', 'pinyin': 'shū' if zh else '', 'hsk': '1' if zh else ''}
+            if pl: d.update({'aspect': 'iść (несов.) / pójść (сов.)' if term == 'szedł' else '', 'forms': 'род. п. mgły; мн. ч. mgły' if term.startswith('mgł') else '', 'false_friend': 'не путать с русским «лес» — тут всё верно' if term == 'las' else '', 'phrase': 'nad ścieżką — над тропой' if term == 'ścieżką' else ''})
+            if zh: d.update({'parts': '书 — книга; 店 = 广 (навес) + 占', 'measure': '家 (jiā)'})
+            txt = 'Вот ответ:\n' + J(d)
         await route.fulfill(status=200, content_type='application/json', body=json.dumps({'content': [{'type': 'text', 'text': txt}]}))
 
 # ---------------------------------------------------------------- mock free translators
@@ -507,8 +528,9 @@ async def c11_native_schedule(c):
     await c.check()
 
 exec(open(os.path.join(T, 'plan_cases.py'), encoding='utf-8').read())
+exec(open(os.path.join(T, 'learn_cases.py'), encoding='utf-8').read())
 
-CASES = [c01_empty_and_import, c02_read_tap_save, c03_chinese, c04_review, c05_errors_and_settings, c06_desktop, c07_sync_two_devices, c08_fallback, c09_eink_android, c10_schedule_push, c11_native_schedule] + PLAN_CASES
+CASES = [c01_empty_and_import, c02_read_tap_save, c03_chinese, c04_review, c05_errors_and_settings, c06_desktop, c07_sync_two_devices, c08_fallback, c09_eink_android, c10_schedule_push, c11_native_schedule] + PLAN_CASES + LEARN_CASES
 
 async def main():
     sel = sys.argv[1:]

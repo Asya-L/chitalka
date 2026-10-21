@@ -89,7 +89,33 @@ export function dueReminders(state, now) {
     if (done >= plan) continue;
     out.push({ item: it.id || it.lang + it.time, day: t.day, ...message(state, it, plan, done, now) });
   }
+  if (st.weekly !== false && t.wd === 7 && t.min >= 18 * 60 && t.min < 18 * 60 + 45) {
+    const w = weekly(state, now, tz);
+    if (w) out.push({ item: 'weekly', day: t.day, ...w });
+  }
   return out;
+}
+
+/** Итоги недели (понедельник — воскресенье по местному времени). */
+export function weekly(state, now, tz) {
+  const t = localParts(now, tz);
+  const [y, m, d] = t.day.split('-').map(Number);
+  const sun = Date.UTC(y, m - 1, d) / 86400000;            // номер дня (как dnum в приложении)
+  const days = []; for (let i = 6; i >= 0; i--) { const x = new Date((sun - i) * 86400000); days.push(x.toISOString().slice(0, 10)); }
+  let min = 0, saved = 0, chd = 0; const byLang = {};
+  for (const day of days) for (const e of Object.values((state.log || {})[day] || {})) {
+    min += +e.min || 0; saved += +e.saved || 0; chd += +e.chd || 0;
+    for (const l of Object.keys(LANG_RU)) byLang[l] = (byLang[l] || 0) + (+e['m_' + l] || 0);
+  }
+  let known = 0; for (const l of Object.keys(state.known || {})) for (const v of Object.values(state.known[l])) if (v > sun - 7 && v <= sun) known++;
+  if (min < 1 && !known && !saved) return null;
+  const fm = (x) => { x = Math.round(x); return x >= 60 ? Math.floor(x / 60) + ' ч ' + (x % 60) + ' мин' : x + ' мин'; };
+  const parts = [fm(min) + ' занятий'];
+  if (known) parts.push('+' + known + ' знакомых слов');
+  if (saved) parts.push(saved + ' в повторение');
+  if (chd) parts.push(chd + ' ' + (chd % 10 === 1 && chd % 100 !== 11 ? 'глава' : chd % 10 >= 2 && chd % 10 <= 4 && (chd % 100 < 10 || chd % 100 >= 20) ? 'главы' : 'глав'));
+  const langs = Object.keys(byLang).filter((l) => byLang[l] >= 1).sort((a, b) => byLang[b] - byLang[a]).map((l) => LANG_TITLE[l] + ' ' + fm(byLang[l]));
+  return { title: 'Итоги недели', body: parts.join(', ') + '.' + (langs.length ? ' ' + langs.join(', ') + '.' : ''), url: './?tab=diary', tag: 'mezhdu-weekly' };
 }
 function message(state, it, plan, done, now) {
   const books = Object.values(state.books || {}).filter((b) => !b.del && b.lang === it.lang).sort((a, b) => (b.last || b.added || 0) - (a.last || a.added || 0));

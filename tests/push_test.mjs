@@ -3,7 +3,7 @@
 import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 import assert from 'node:assert/strict';
-import { encryptPayload, vapidHeader, dueReminders, localParts } from '../supabase/functions/remind/index.ts';
+import { encryptPayload, vapidHeader, dueReminders, localParts, weekly } from '../supabase/functions/remind/index.ts';
 const require = createRequire(new URL('../../vendor/node_modules/', import.meta.url));
 const ece = require('http_ece');
 const b64u = b => Buffer.from(b).toString('base64url');
@@ -56,3 +56,17 @@ assert.equal(dueReminders(state, wed1905)[0].title, 'Польский — ещё
 state.log['2026-10-21'].d1.m_pl = 16;
 assert.equal(dueReminders(state, wed1905).length, 0, 'план выполнен — не напоминаем');
 console.log('PASS schedule');
+
+// 4) итоги недели: воскресенье 18:05 по Калининграду
+const sun1805 = new Date('2026-10-25T16:05:00Z');
+const dn = (iso) => Date.UTC(...iso.split('-').map((x, i) => i === 1 ? x - 1 : +x)) / 86400000;
+const st2 = { settings: { tz: 'Europe/Kaliningrad', schedule: [] }, known: { pl: { a: dn('2026-10-20'), b: dn('2026-10-25'), c: dn('2026-10-10') } },
+  log: { '2026-10-19': { d: { min: 50, m_pl: 30, m_en: 20, saved: 4, chd: 1 } }, '2026-10-25': { d: { min: 85, m_pl: 85, saved: 8 } }, '2026-10-18': { d: { min: 999 } } } };
+let wk = dueReminders(st2, sun1805);
+assert.equal(wk.length, 1); assert.equal(wk[0].item, 'weekly');
+assert.equal(wk[0].body, '2 ч 15 мин занятий, +2 знакомых слов, 12 в повторение, 1 глава. Польский 1 ч 55 мин, Английский 20 мин.');
+assert.equal(dueReminders(st2, new Date('2026-10-25T15:05:00Z')).length, 0, 'не в 18:00');
+assert.equal(dueReminders(st2, new Date('2026-10-24T16:05:00Z')).length, 0, 'не воскресенье');
+st2.settings.weekly = false; assert.equal(dueReminders(st2, sun1805).length, 0, 'выключено');
+assert.equal(weekly({ log: {}, known: {} }, sun1805, 'Europe/Kaliningrad'), null, 'пустая неделя — молчим');
+console.log('PASS weekly');

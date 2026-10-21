@@ -61,7 +61,7 @@ const DEV = (() => { let d = null; try { d = localStorage.getItem('mezhdu-dev');
 const getKey = () => { try { return localStorage.getItem(KEY_LS) || ''; } catch (e) { return ''; } };
 
 function fresh() {
-  return { v: 1, settings: { u: 0, target: 'ru', model: MODELS[0].id, font: 19, lh: 1.65, theme: 'auto', pinyin: true, goal: 20, newPerDay: 15, levels: { en: 'B1', pl: 'B1', zh: 'HSK1' }, schedule: [], tz: '' }, books: {}, words: {}, log: {} };
+  return { v: 1, settings: { u: 0, target: 'ru', model: MODELS[0].id, font: 19, lh: 1.65, theme: 'auto', pinyin: true, goal: 20, newPerDay: 15, levels: { en: 'B1', pl: 'B1', zh: 'HSK1' }, schedule: [], tz: '', tones: true, cards: 'all', rate: 0.9, weekly: true }, books: {}, words: {}, log: {}, known: {}, mistakes: {}, grammar: {} };
 }
 function normalize(x) {
   const f = fresh();
@@ -69,13 +69,14 @@ function normalize(x) {
   const lv = Object.assign({}, f.settings.levels, (x.settings && x.settings.levels) || {});
   x.settings = Object.assign(f.settings, x.settings || {}); x.settings.levels = lv;
   x.books = x.books || {}; x.words = x.words || {}; x.log = x.log || {}; x.v = 1;
+  x.known = x.known || {}; x.mistakes = x.mistakes || {}; x.grammar = x.grammar || {};
   return x;
 }
 function merge(a, b) {
   a = normalize(clone(a)); b = normalize(clone(b));
   const out = fresh();
   out.settings = (b.settings.u || 0) > (a.settings.u || 0) ? b.settings : a.settings;
-  for (const k of ['books', 'words']) {
+  for (const k of ['books', 'words', 'mistakes', 'grammar']) {
     const o = {};
     for (const id of new Set([...Object.keys(a[k]), ...Object.keys(b[k])])) {
       const x = a[k][id], y = b[k][id];
@@ -83,6 +84,8 @@ function merge(a, b) {
     }
     out[k] = o;
   }
+  // знакомые слова: объединение, день первого знакомства — самый ранний
+  for (const K of [a.known, b.known]) for (const l in K) { const t = (out.known[l] = out.known[l] || {}); for (const w in K[l]) t[w] = t[w] ? Math.min(t[w], K[l][w]) : K[l][w]; }
   for (const L of [a.log, b.log]) for (const d in L) for (const dev in L[d]) {
     const t = (out.log[d] = out.log[d] || {}); const e = (t[dev] = t[dev] || {});
     for (const f in L[d][dev]) e[f] = Math.max(e[f] || 0, L[d][dev][f] || 0);
@@ -217,7 +220,7 @@ Reply with JSON only, no other text:
  "alt": "up to 3 other common meanings in ${T}, comma-separated, or empty string",
  "note": "one short sentence in ${T} explaining the form or usage here (${o.lang === 'pl' ? 'case, gender, aspect, tense' : o.lang === 'en' ? 'tense, phrasal verb, idiom, register' : 'measure word, particle, set phrase'}), only if useful for a ${lvl} learner, otherwise empty string",
  "pinyin": "${o.lang === 'zh' ? 'pinyin with tone marks for the lemma' : ''}",
- "hsk": "${o.lang === 'zh' ? 'HSK level 1–6 of the lemma if it is in the HSK lists, otherwise empty string' : ''}"}`;
+ "hsk": "${o.lang === 'zh' ? 'HSK level 1–6 of the lemma if it is in the HSK lists, otherwise empty string' : ''}"${EXTRA_FIELDS(o.lang)}}`;
 }
 /* ---------------- перевод без Claude ---------------- */
 // Цепочка: Google Translate (без ключа) → MyMemory; начальная форма и падеж — из английского Викисловаря.
@@ -292,13 +295,13 @@ async function lookup(o, force) {
   catch (e) { o.aiErr = e.message; return basicLookup(o); }
 }
 async function aiLookup(o, force) {
-  const ck = [o.lang, S.settings.target, S.settings.levels[o.lang], o.term, o.ctx].join('|');
+  const ck = ['v2', o.lang, S.settings.target, S.settings.levels[o.lang], o.term, o.ctx].join('|');
   if (!force) { const hit = await idb.get('tr', ck).catch(() => null); if (hit) return hit; }
-  const txt = await askClaude(lookupPrompt(o), 400);
+  const txt = await askClaude(lookupPrompt(o), 800);
   const m = txt.match(/\{[\s\S]*\}/);
   let d;
   try { d = JSON.parse(m ? m[0] : txt); } catch (e) { throw new AIError('parse', 'Claude ответил непонятно. Нажми «Ещё раз».'); }
-  const r = { lemma: String(d.lemma || o.term).trim(), pos: String(d.pos || ''), tr: String(d.tr || '').trim(), alt: String(d.alt || ''), note: String(d.note || ''), py: String(d.pinyin || ''), hsk: String(d.hsk || '').replace(/\D/g, '') };
+  const r = { lemma: String(d.lemma || o.term).trim(), pos: String(d.pos || ''), tr: String(d.tr || '').trim(), alt: String(d.alt || ''), note: String(d.note || ''), py: String(d.pinyin || ''), hsk: String(d.hsk || '').replace(/\D/g, ''), extra: extraOf(d) };
   if (o.lang === 'zh' && !r.py) r.py = pinyinOf(r.lemma);
   idb.put('tr', ck, r).catch(() => { });
   return r;
@@ -336,14 +339,16 @@ function saveWord(o, st) {
   if (w.del) { w.del = false; w.created = now(); w.srs = { due: now(), ivl: 0, ease: 2.5, reps: 0, lapses: 0 }; w.ctxs = []; }
   const k = keyOf(o.term, o.lang);
   if (!w.forms.includes(k)) w.forms.push(k);
-  if (d.tr && !(d.src === 'basic' && w.tr && w.src !== 'basic')) { w.tr = d.tr; w.alt = d.alt; w.pos = d.pos; w.note = d.note; w.py = d.py; w.hsk = d.hsk; w.src = d.src || 'claude'; }
+  if (d.tr && !(d.src === 'basic' && w.tr && w.src !== 'basic')) { w.tr = d.tr; w.alt = d.alt; w.pos = d.pos; w.note = d.note; w.py = d.py; w.hsk = d.hsk; w.src = d.src || 'claude'; if (d.extra && Object.keys(d.extra).length) w.extra = d.extra; }
   if (ctx && !w.ctxs.some(c => c.s === ctx.s)) { w.ctxs.unshift(ctx); w.ctxs = w.ctxs.slice(0, 5); }
   w.st = st || 'learn'; w.u = now();
+  if (w.st === 'known') { const kn = knownMap(o.lang); for (const f of w.forms) if (!kn[f]) kn[f] = dnum(); }
   if (isNew && w.st === 'learn') bump('saved', 1);
   save();
   return w;
 }
-function sm2(srs, g) {
+function sm2(srs, g) { return fsrs(srs, g); }
+function sm2Legacy(srs, g) {
   const s = Object.assign({ ivl: 0, ease: 2.5, reps: 0, lapses: 0 }, srs);
   if (g === 0) { s.lapses++; s.reps = 0; s.ivl = 0; s.ease = Math.max(1.3, s.ease - 0.2); s.due = now() + 10 * 60000; return s; }
   if (g === 1) { s.ivl = s.reps === 0 ? 1 : Math.max(1, Math.round(s.ivl * 1.2)); s.ease = Math.max(1.3, s.ease - 0.15); }
@@ -424,6 +429,7 @@ function cover(b) {
 const pctLabel = b => Math.floor((b.pct || 0) * 100) + '%';
 function renderShelf() {
   const books = liveBooks();
+  if (books.length) setTimeout(refreshShelfCoverage, 50);
   const fileInput = `<input type="file" id="file" class="sr" accept=".epub,.fb2,.txt,.zip,application/epub+zip,text/plain" multiple>`;
   if (!books.length) return `${fileInput}<div class="empty">
       <div class="ill" aria-hidden="true">${I.book}</div>
@@ -447,14 +453,14 @@ function renderShelf() {
       <div class="ch">${cur.last ? esc(ch && ch.t ? ch.t : '') : 'Ещё не открыта'}${cur.last ? ` <span aria-hidden="true">·</span> прочитано ${pctLabel(cur)}` : ''}</div>
       <div class="bar" aria-hidden="true"><i style="width:${Math.round((cur.pct || 0) * 100)}%"></i></div>
       <div class="row"><button class="btn primary" data-a="open" data-id="${cur.id}">${cur.last ? 'Читать дальше' : 'Начать читать'}</button>
-      <span class="hint">Сегодня ${Math.round(t.min)} из ${S.settings.goal} мин</span></div>
+      <span class="hint">Сегодня ${Math.round(t.min)} из ${S.settings.goal} мин${covBadge(cur.id) ? ' · ' + covBadge(cur.id) : ''}</span></div>
     </div>
   </section>
   ${renderPlanToday()}
   <section class="sec">
     <div class="sec-h"><h2>Полка</h2>${langs.length > 1 ? `<div class="chips" role="group" aria-label="Язык">${['all', ...langs].map(l => `<button class="chip" data-a="filter" data-id="${l}" aria-pressed="${ui.filter === l}">${l === 'all' ? 'Все' : `<span class="lang-dot" style="--c:var(--${l})"></span>${LANGS[l].name}`}</button>`).join('')}</div>` : ''}</div>
     <div class="shelf">
-      ${list.map(b => `<button class="book" data-a="open" data-id="${b.id}">${cover(b)}<div class="t" lang="${b.lang}">${esc(b.title)}</div><div class="a">${b.last ? pctLabel(b) : 'новая'}${b.author ? ' · ' + esc(b.author) : ''}</div></button>`).join('')}
+      ${list.map(b => `<button class="book" data-a="open" data-id="${b.id}">${cover(b)}<div class="t" lang="${b.lang}">${esc(b.title)}</div><div class="a">${b.last ? pctLabel(b) : 'новая'}${covBadge(b.id) ? ' · ' + covBadge(b.id) : b.author ? ' · ' + esc(b.author) : ''}</div></button>`).join('')}
       <div><button class="addbook" data-a="add">${I.plus}<span>Добавить книгу<br><span class="hint">EPUB, FB2, TXT</span></span></button></div>
     </div>
   </section>`;
@@ -476,6 +482,7 @@ function importDialog(book, done) {
       <label class="f">Автор<input class="in" name="author" value="${esc(d.author)}"></label>
       <div class="f">Язык книги<div class="seg" role="group" aria-label="Язык книги" style="margin-top:5px;display:flex">${Object.keys(LANGS).map(l => `<button type="button" data-a="imp-lang" data-id="${l}" aria-pressed="${d.lang === l}">${LANGS[l].ru}</button>`).join('')}</div></div>
       <p class="hint">${book.chapters.length} ${plural(book.chapters.length, 'глава', 'главы', 'глав')}, около ${fmtNum(BookParse.countWords(book.chapters, d.lang))} ${d.lang === 'zh' ? 'иероглифов' : 'слов'}.</p>
+      ${importHint(Object.assign({}, book, { lang: d.lang }))}
       <div class="row" style="margin-top:8px"><button class="btn primary" type="submit">Поставить на полку</button><button class="btn ghost" type="button" data-a="sheet-close">Отмена</button></div>
     </form>`, { center: true, onClose: () => { if (!d.done) done(); } });
   importDialog.cur = { d, book, done, paint };
@@ -524,7 +531,7 @@ async function openBook(id) {
     if (!c) { toast(session || !SYNC_READY ? 'Текст этой книги ещё не загружен в облако с другого устройства. Открой её там, когда будет связь.' : 'Войди в аккаунт в настройках, чтобы скачать эту книгу.'); return; }
   }
   const pos = b.pos || { c: 0, p: 0 };
-  R = { id, c, ch: Math.min(pos.c || 0, c.chapters.length - 1), p: pos.p || 0, lang: b.lang };
+  R = { id, c, ch: Math.min(pos.c || 0, c.chapters.length - 1), p: pos.p || 0, lang: b.lang, tapped: new Set() };
   b.last = now(); b.u = now(); save(5000);
   openLayer('reader'); renderReader(R.p); startActivity();
   if (NATIVE) try { NATIVE.setPaging(true); } catch (e) { }
@@ -538,7 +545,8 @@ function renderPara(text, i, lang, saved, py) {
     const cls = saved.has(k) ? ' class="s"' : '';
     if (py && isHan(tk.t)) {
       let arr = []; try { arr = pinyinPro.pinyin(tk.t, { type: 'array' }); } catch (e) { }
-      h += `<w data-k="${esc(k)}" data-o="${tk.o}" data-t="${esc(tk.t)}"${cls}><ruby>${Array.from(tk.t).map((c, j) => esc(c) + '<rt>' + esc(arr[j] || '') + '</rt>').join('')}</ruby></w>`;
+      const tn = S.settings.tones ? toneNums(tk.t) : [];
+      h += `<w data-k="${esc(k)}" data-o="${tk.o}" data-t="${esc(tk.t)}"${cls}><ruby>${Array.from(tk.t).map((c, j) => esc(c) + '<rt' + (tn[j] ? ` class="t${tn[j]}"` : '') + '>' + esc(arr[j] || '') + '</rt>').join('')}</ruby></w>`;
     } else h += `<w data-k="${esc(k)}" data-o="${tk.o}"${cls}>${esc(tk.t)}</w>`;
   }
   return `<p data-i="${i}">${h}</p>`;
@@ -554,14 +562,18 @@ function renderReader(scrollToP) {
       <button class="iconbtn" data-a="r-menu" aria-label="Оглавление и вид текста">${I.menu}</button></div>
     <div class="r-scroll" id="rs"><div class="r-col">
       ${ch.t ? `<h2 lang="${L}">${esc(ch.t)}</h2><div class="orn" aria-hidden="true">✦ ✦ ✦</div>` : ''}
+      ${prepHTML()}
       <div class="text${L === 'zh' ? ' zh' : ''}${py ? ' py' : ''}" id="rt" lang="${L === 'zh' ? 'zh-CN' : L}" style="--fs:${S.settings.font}px;--lh:${S.settings.lh}">${ch.p.map((p, i) => renderPara(p, i, L, saved, py)).join('')}</div>
+      ${chapterEndHTML()}
       <nav class="r-nav" aria-label="Главы">
         ${R.ch > 0 ? `<button class="btn" data-a="r-ch" data-id="${R.ch - 1}">Предыдущая глава</button>` : '<span></span>'}
         ${R.ch < n - 1 ? `<button class="btn primary" data-a="r-ch" data-id="${R.ch + 1}">Следующая глава</button>` : `<span class="hint">Конец книги</span>`}
       </nav>
     </div></div>
-    <div class="r-foot" id="rf"></div>
+    ${playerHTML()}<div class="r-foot" id="rf"></div>
   </div>`;
+  if (!R.chStart || R.chStart.ch !== R.ch) { snapshotChapter(); R.chStart.ch = R.ch; }
+  const pd = $('#prep'); if (pd && pd.open && !R.prep) setTimeout(loadPrep, 0);
   const rs = $('#rs');
   if (scrollToP) { const el = rs.querySelector(`p[data-i="${scrollToP}"]`); if (el) rs.scrollTop = el.offsetTop - 12; }
   rs.addEventListener('scroll', onReaderScroll, { passive: true });
@@ -593,16 +605,18 @@ function setPos(c, p, atEnd) {
   const g = atEnd ? before + b.chs[c].n - 1 : before + p;
   const pct = Math.min(1, (g + 1) / total);
   if ((b.maxG == null ? -1 : b.maxG) < g) {
-    let n = 0, gi = 0;
-    R.c.chapters.forEach((ch, ci) => ch.p.forEach(par => { if (gi > (b.maxG == null ? -1 : b.maxG) && gi <= g) n += wordCount(par, b.lang); gi++; }));
+    let n = 0, gi = 0; const passed = [];
+    R.c.chapters.forEach((ch, ci) => ch.p.forEach(par => { if (gi > (b.maxG == null ? -1 : b.maxG) && gi <= g) { n += wordCount(par, b.lang); passed.push(par); } gi++; }));
     b.maxG = g; b.read = (b.read || 0) + n; bump('words', n);
+    markPassed(passed, b.lang, b.title);
   }
+  if (atEnd && !(b.done || []).includes(c)) { (b.done = b.done || []).push(c); bump('chd', 1); setTimeout(refreshChapterSummary, 0); }
   b.pos = { c, p }; b.pct = Math.max(pct, b.pct && b.pos && b.pos.c === c ? 0 : 0) || pct; b.u = now();
   save(8000); updateFoot();
 }
 function exitReader() {
   if (!R) return;
-  trackPosition(); stopActivity();
+  trackPosition(); stopActivity(); if (PL.on) playerStop();
   if (NATIVE) try { NATIVE.setPaging(false); } catch (e) { }
   R = null; $('#reader-root').innerHTML = ''; save(300); render();
 }
@@ -638,17 +652,20 @@ function bindPaging(rs) {
   });
 }
 function goChapter(c) {
-  R.ch = c; R.p = 0; setPos(c, 0, false); renderReader(0); $('#rs').scrollTop = 0;
+  if (PL.on) playerStop();
+  R.ch = c; R.p = 0; R.prep = null; R.prevSum = null; R.chStart = null; setPos(c, 0, false); renderReader(0); $('#rs').scrollTop = 0;
 }
 function readerMenu() {
   const b = curBook(); const L = R.lang;
   showSheet(`<h2 style="margin-bottom:10px">${esc(b.title)}</h2>
     <div class="row" style="margin-bottom:14px">
       <div class="seg" role="group" aria-label="Размер текста"><button data-a="fs" data-id="-1" aria-label="Мельче">A−</button><button data-a="fs" data-id="1" aria-label="Крупнее">A+</button></div>
+      ${L === 'zh' ? `<div class="seg" role="group" aria-label="Тоны"><button data-a="tones" aria-pressed="${S.settings.tones}">Тоны цветом</button></div>` : ''}
       <div class="seg" role="group" aria-label="Тема">${[['paper', 'Бумага'], ['sepia', 'Сепия'], ['night', 'Ночь']].map(([k, n]) => `<button data-a="theme" data-id="${k}" aria-pressed="${S.settings.theme === k}">${n}</button>`).join('')}</div>
       ${L === 'zh' ? `<div class="seg" role="group" aria-label="Пиньинь"><button data-a="pinyin" aria-pressed="${S.settings.pinyin}">Пиньинь над текстом</button></div>` : ''}
     </div>
     ${R.c.chapters.length > 1 ? `<h3 style="margin:6px 0 4px">Оглавление</h3><ol class="toc">${R.c.chapters.map((c, i) => `<li><button data-a="r-goto" data-id="${i}"${i === R.ch ? ' aria-current="true"' : ''}><span class="n">${i + 1}</span><span lang="${L}">${esc(c.t || 'Глава ' + (i + 1))}</span></button></li>`).join('')}</ol>` : ''}
+    <div class="row" style="margin:4px 0 14px">${canSpeak ? '<button class="btn sm" data-a="r-listen">' + I.speak + 'Слушать главу</button>' : ''}${getKey() ? '<button class="btn sm" data-a="r-chat">Поговорить о книге</button>' : ''}</div>
     <div class="row" style="margin-top:18px"><button class="btn danger sm" data-a="book-del">Убрать книгу с полки</button></div>`, { label: 'Оглавление' });
 }
 function refreshHighlights() {
@@ -672,8 +689,9 @@ function tickActivity() {
 /* ---------------- word sheet ---------------- */
 function openWord(o) {
   CUR = o;
+  if (R && R.tapped) R.tapped.add(keyOf(o.term, o.lang));
   const w = findWord(o.lang, o.term);
-  if (w && w.tr) { o.data = { lemma: w.lemma, pos: w.pos, tr: w.tr, alt: w.alt, note: w.note, py: w.py, hsk: w.hsk }; o.state = 'ok'; o.fromSaved = true; }
+  if (w && w.tr) { o.data = { lemma: w.lemma, pos: w.pos, tr: w.tr, alt: w.alt, note: w.note, py: w.py, hsk: w.hsk, extra: w.extra }; o.state = 'ok'; o.fromSaved = true; if (!w.del && w.st === 'learn') addCtx(w, o); }
   else { o.state = 'loading'; }
   showSheet(wordHTML(o), { label: 'Слово «' + o.term + '»' });
   if (o.state === 'loading') runLookup(o, false);
@@ -709,16 +727,17 @@ function wordHTML(o) {
       <div class="w-tr">${esc(d.tr || '—')}</div>
       ${d.alt ? `<div class="w-alt">Ещё: ${esc(d.alt)}</div>` : ''}
       ${d.note ? `<div class="w-note">${esc(d.note)}</div>` : ''}
+      ${extraHTML(d)}${d.extra && d.extra.phrase && !saved ? '<button class="btn ghost sm" data-a="w-phrase" style="padding-left:0">Учить выражение целиком</button>' : ''}
       ${d.src === 'basic' ? `<p class="hint" style="margin:10px 0 0">Простой перевод через ${esc(d.via || 'переводчик')}, без учёта предложения.${o.aiErr ? ' Claude недоступен: ' + esc(o.aiErr) : getKey() ? '' : ' С ключом Claude будет перевод в контексте и пояснения.'}</p>${getKey() ? '<button class="btn ghost sm" data-a="w-retry" style="padding-left:0">Спросить Claude ещё раз</button>' : ''}` : ''}
       ${o.fromSaved ? `<button class="btn ghost sm" data-a="w-retr" style="margin-top:6px;padding-left:0">Перевести в этом предложении</button>` : ''}`;
   }
   const ctx = o.ctx ? `<div class="w-ctx${L === 'zh' ? ' zh' : ''}" lang="${L}">${highlight(o.ctx, o.term, L)}</div>
-    ${o.sentTr ? `<div class="w-ctxtr">${esc(o.sentTr)}</div>` : o.sentBusy ? '<div class="skeleton" style="width:70%"></div>' : o.sentErr ? `<div class="formmsg">${esc(o.sentErr)}</div>` : `<button class="btn ghost sm" data-a="w-sent" style="padding-left:0">Перевести предложение</button>`}` : '';
+    ${o.sentTr ? `<div class="w-ctxtr">${esc(o.sentTr)}</div>` : o.sentBusy ? '<div class="skeleton" style="width:70%"></div>' : o.sentErr ? `<div class="formmsg">${esc(o.sentErr)}</div>` : `<button class="btn ghost sm" data-a="w-sent" style="padding-left:0">Перевести предложение</button>`}${canSpeak ? `<button class="btn ghost sm" data-a="w-sent-speak">${I.speak}Послушать предложение</button>` : ''}` : '';
   const acts = o.state === 'ok' ? `<div class="w-act">
       ${saved ? `<button class="btn" data-a="w-known">Уже знаю</button><button class="btn ghost danger" data-a="w-del">Убрать из слов</button>`
       : `<button class="btn primary" data-a="w-save">${known ? 'Снова учить' : 'Учить это слово'}</button>${known ? '' : '<button class="btn" data-a="w-knownnew">Знаю</button>'}`}
     </div>${saved ? '<p class="hint" style="margin-top:8px">Слово уже в повторении.</p>' : ''}` : '';
-  return `<div class="w-head"><div style="flex:1;min-width:0"><div class="w-term${L === 'zh' ? ' zh' : ''}" lang="${L}">${esc(o.term)}</div>${py ? `<div class="w-py">${esc(py)}</div>` : ''}</div>
+  return `<div class="w-head"><div style="flex:1;min-width:0"><div class="w-term${L === 'zh' ? ' zh' : ''}" lang="${L}">${esc(o.term)}</div>${py ? `<div class="w-py">${pyHTML(o.term, py)}</div>` : ''}</div>
     ${canSpeak ? `<button class="iconbtn" data-a="w-speak" aria-label="Произнести">${I.speak}</button>` : ''}
     <button class="iconbtn" data-a="sheet-close" aria-label="Закрыть">${I.close}</button></div>
     ${body}${ctx}${acts}`;
@@ -772,7 +791,7 @@ function checkSelection() {
 /* ---------------- words tab ---------------- */
 function renderWords() {
   const all = liveWords();
-  if (!all.length) return `<div class="empty"><h1>Здесь будут твои слова</h1><p>Открой книгу и нажми на незнакомое слово, затем «Учить это слово». Оно попадёт сюда вместе с предложением, в котором встретилось, и будет повторяться в нужные дни.</p><p class="hint">Чтобы перевести целую фразу, выдели её пальцем или мышью.</p></div>`;
+  if (!all.length) return `${''}<div class="empty"><h1>Здесь будут твои слова</h1><p>Открой книгу и нажми на незнакомое слово, затем «Учить это слово». Оно попадёт сюда вместе с предложением, в котором встретилось, и будет повторяться в нужные дни.</p><p class="hint">Чтобы перевести целую фразу, выдели её пальцем или мышью.</p></div>`;
   const langs = Object.keys(LANGS).filter(l => all.some(w => w.lang === l));
   const decks = langs.map(l => {
     const q = reviewQueue(l); const learn = liveWords(l).filter(w => w.st === 'learn').length;
@@ -781,17 +800,18 @@ function renderWords() {
       <button class="btn ${q.length ? 'primary' : ''}" data-a="rv-start" data-id="${l}"${q.length ? '' : ' disabled'}>Повторить</button></div>`;
   }).join('');
   const qn = ui.q.trim().toLowerCase();
-  const list = all.filter(w => (ui.wl === 'all' || w.lang === ui.wl) && w.st === ui.ws && (!qn || w.lemma.toLowerCase().includes(qn) || (w.tr || '').toLowerCase().includes(qn) || (w.forms || []).some(f => f.includes(qn))))
+  const list = all.filter(w => (ui.wl === 'all' || w.lang === ui.wl) && (ui.ws === 'hard' ? w.st === 'learn' && w.leech : w.st === ui.ws) && (!qn || w.lemma.toLowerCase().includes(qn) || (w.tr || '').toLowerCase().includes(qn) || (w.forms || []).some(f => f.includes(qn))))
     .sort((a, b) => b.created - a.created);
   return `<h1>Слова</h1><div class="decks sec" style="margin-top:16px">${decks}</div>
   <section class="sec">
     <div class="row" style="justify-content:space-between;margin-bottom:12px">
       <div class="chips" role="group" aria-label="Язык">${['all', ...langs].map(l => `<button class="chip" data-a="wl" data-id="${l}" aria-pressed="${ui.wl === l}">${l === 'all' ? 'Все языки' : LANGS[l].ru}</button>`).join('')}</div>
-      <div class="seg" role="group" aria-label="Статус"><button data-a="ws" data-id="learn" aria-pressed="${ui.ws === 'learn'}">Учу</button><button data-a="ws" data-id="known" aria-pressed="${ui.ws === 'known'}">Знаю</button></div>
+      <div class="seg" role="group" aria-label="Статус"><button data-a="ws" data-id="learn" aria-pressed="${ui.ws === 'learn'}">Учу</button><button data-a="ws" data-id="hard" aria-pressed="${ui.ws === 'hard'}">Трудные</button><button data-a="ws" data-id="known" aria-pressed="${ui.ws === 'known'}">Знаю</button></div>
     </div>
     <label class="sr" for="wq">Поиск слова</label><input class="in" id="wq" type="search" placeholder="Найти слово или перевод" value="${esc(ui.q)}" style="margin-bottom:8px">
-    <ul class="wlist" id="wlist">${list.map(w => `<li class="wrow"><button data-a="wopen" data-id="${esc(w.id)}"><span class="term${w.lang === 'zh' ? ' zh' : ''}" lang="${w.lang}">${esc(w.lemma)}</span><span class="tr">${esc(w.tr || '')}</span><span class="due">${w.st === 'learn' ? (w.srs.reps || w.srs.lapses ? (w.srs.due <= now() ? 'сегодня' : ivlLabel(w.srs)) : 'новое') : ''}</span></button></li>`).join('') || '<li class="hint" style="padding:14px 0">Ничего не нашлось.</li>'}</ul>
-  </section>`;
+    <ul class="wlist" id="wlist">${list.map(w => `<li class="wrow"><button data-a="wopen" data-id="${esc(w.id)}"><span class="term${w.lang === 'zh' ? ' zh' : ''}" lang="${w.lang}">${esc(w.lemma)}</span><span class="tr">${esc(w.tr || '')}</span><span class="due">${w.st === 'learn' ? (w.srs.reps || w.srs.lapses ? (w.srs.due <= now() ? 'сегодня' : ivlLabel(w.srs)) : 'новое') : ''}</span></button></li>`).join('') || `<li class="hint" style="padding:14px 0">${ui.ws === 'hard' ? 'Трудных слов нет — так держать.' : 'Ничего не нашлось.'}</li>`}</ul>
+  </section>
+  ${mistakesHTML()}${grammarHTML()}`;
 }
 function wordDetail(id) {
   const w = S.words[id]; if (!w) return;
@@ -800,7 +820,8 @@ function wordDetail(id) {
       ${canSpeak ? `<button class="iconbtn" data-a="d-speak" data-id="${esc(id)}" aria-label="Произнести">${I.speak}</button>` : ''}<button class="iconbtn" data-a="sheet-close" aria-label="Закрыть">${I.close}</button></div>
     <div class="w-meta">${[esc(w.pos), w.hsk ? 'HSK ' + esc(w.hsk) : '', (w.forms || []).filter(f => f !== keyOf(w.lemma, L)).length ? 'формы: ' + esc(w.forms.filter(f => f !== keyOf(w.lemma, L)).join(', ')) : ''].filter(Boolean).join(' · ')}</div>
     <form data-form="edit-tr" data-id="${esc(id)}" style="margin-top:12px"><label class="f">Перевод<input class="in" name="tr" value="${esc(w.tr || '')}"></label></form>
-    ${w.alt ? `<div class="w-alt">Ещё: ${esc(w.alt)}</div>` : ''}${w.note ? `<div class="w-note">${esc(w.note)}</div>` : ''}
+    ${w.alt ? `<div class="w-alt">Ещё: ${esc(w.alt)}</div>` : ''}${w.note ? `<div class="w-note">${esc(w.note)}</div>` : ''}${extraHTML(w)}
+    ${w.leech ? `<div class="leech"><b>Трудное слово</b> — забывалось ${w.srs.lapses} раз.${w.hint ? `<p>${esc(w.hint)}</p>` : ''}</div>` : ''}
     ${(w.ctxs || []).map(c => `<div class="w-ctx${L === 'zh' ? ' zh' : ''}" lang="${L}">${highlight(c.s, c.f, L)}</div>${c.tr ? `<div class="w-ctxtr">${esc(c.tr)}</div>` : ''}<div class="hint">${esc(c.b || '')}</div>`).join('')}
     <div class="w-act">${w.st === 'learn' ? `<button class="btn" data-a="d-known" data-id="${esc(id)}">Уже знаю</button>` : `<button class="btn" data-a="d-learn" data-id="${esc(id)}">Снова учить</button>`}<button class="btn ghost danger" data-a="d-del" data-id="${esc(id)}">Удалить</button></div>`, { label: w.lemma });
 }
@@ -822,18 +843,13 @@ function renderReview() {
     body = `<div class="card"><h1>Готово</h1><p class="hint" style="margin-top:10px">Повторено сегодня: ${t.rev}. Следующие слова появятся, когда придёт их время.</p></div>`;
     foot = `<button class="btn primary wide" data-a="rv-close">К словам</button>`;
   } else {
-    const L = w.lang; const c = (w.ctxs || [])[0];
-    body = `<div class="card">
-      <div class="term${L === 'zh' ? ' zh' : ''}" lang="${L}">${esc(w.lemma)}</div>
-      ${RV.show && w.py ? `<div class="w-py" style="margin-top:6px">${esc(w.py)}</div>` : ''}
-      ${canSpeak ? `<button class="btn ghost sm" data-a="rv-speak" style="margin-top:8px">${I.speak}Послушать</button>` : ''}
-      ${c ? `<div class="ctx${L === 'zh' ? ' zh' : ''}" lang="${L}">${highlight(c.s, c.f, L)}</div><div class="src">${esc(c.b || '')}</div>` : ''}
-      ${RV.show ? `<div class="ans" aria-live="polite"><div class="w-tr">${esc(w.tr || '—')}</div>${w.alt ? `<div class="w-alt">Ещё: ${esc(w.alt)}</div>` : ''}${w.note ? `<div class="w-note" style="text-align:left">${esc(w.note)}</div>` : ''}${c && c.tr ? `<div class="w-ctxtr" style="text-align:left;margin-top:12px">${esc(c.tr)}</div>` : ''}</div>` : ''}
-    </div>`;
-    if (!RV.show) foot = `<button class="btn primary wide" data-a="rv-show">Показать перевод</button>`;
+    const fresh_ = !RV.type; body = reviewCardHTML(w);
+    if (fresh_ && RV.type === 'listen') setTimeout(() => { const c = pickCtx(w); speakAsync(c ? c.s : w.lemma, w.lang, S.settings.rate); }, 50);
+    const inputCard = (RV.type === 'cloze' || RV.type === 'produce') && w.lang !== 'zh';
+    if (!RV.show) foot = inputCard ? `<button class="btn ghost wide" data-a="rv-show">Не знаю — показать</button>` : `<button class="btn primary wide" data-a="rv-show">${RV.type === 'recog' ? 'Показать перевод' : 'Показать ответ'}</button>`;
     else {
-      const labels = ['Не помню', 'С трудом', 'Помню', 'Легко'];
-      foot = `<div class="grades">${labels.map((l, g) => `<button class="btn${g === 2 ? ' primary' : ''}" data-a="rv-grade" data-id="${g}">${l}<small>${ivlLabel(sm2(w.srs, g))}</small></button>`).join('')}</div>`;
+      const labels = ['Не помню', 'С трудом', 'Помню', 'Легко']; const sg = suggestedGrade();
+      foot = `<div class="grades">${labels.map((l, g) => `<button class="btn${g === sg ? ' primary' : ''}" data-a="rv-grade" data-id="${g}">${l}<small>${ivlLabel(sm2(w.srs, g))}</small></button>`).join('')}</div>`;
     }
   }
   root.innerHTML = `<div class="review" role="dialog" aria-label="Повторение слов">
@@ -844,10 +860,11 @@ function gradeReview(g) {
   const id = RV.q.shift(); const w = S.words[id]; if (!w) return renderReview();
   const wasNew = w.srs.reps === 0 && w.srs.lapses === 0;
   w.srs = sm2(w.srs, g); w.u = now();
+  if ((w.srs.lapses || 0) >= 4) w.leech = true;
   if (wasNew && !RV.again[id]) bump('nw', 1);
   bump('rev', 1);
   if (g === 0) { RV.again[id] = 1; RV.q.push(id); } else RV.done++;
-  RV.show = false; save(4000); renderReview();
+  RV.show = false; RV.type = null; RV.check = null; RV.answer = ''; save(4000); renderReview();
 }
 function exitReview() { RV = null; stopActivity(); $('#review-root').innerHTML = ''; save(300); render(); }
 
@@ -875,6 +892,7 @@ function renderDiary() {
     <div><h2>${frac >= 1 ? 'Цель на сегодня выполнена' : `Сегодня ${Math.round(t.min)} из ${goal} минут`}</h2>
     <p class="hint" style="margin:6px 0 0">Серия: ${streak()} ${plural(streak(), 'день', 'дня', 'дней')} подряд · сегодня прочитано ${fmtNum(t.words)} слов, повторено ${t.rev}, новых слов ${t.saved}</p></div>
   </section>
+  ${vocabHTML()}${weekHTML()}
   <section class="sec"><div class="sec-h"><h2>Две недели</h2><span class="hint">за 7 дней ${Math.round(week)} мин</span></div>
     <div class="panel"><div class="days" role="img" aria-label="Минуты занятий по дням">${days.map(x => `<div class="d" title="${x.k}: ${Math.round(x.min)} мин"><div class="b${x.min < 0.5 ? ' z' : ''}" style="height:${Math.max(2, x.min / mx * 100)}%;${x.min > 0 && x.min < goal ? 'opacity:.45' : ''}"></div><span class="dl">${x.dd}</span></div>`).join('')}</div></div>
   </section>
@@ -997,6 +1015,7 @@ function renderReminders() {
     <p class="hint" style="margin:0 0 14px">В выбранные дни придёт напоминание, если ты ещё не позанималась этим языком нужное время.</p>
     ${items.length ? `<ul class="sched">${items.map(it => `<li><button data-a="sc-edit" data-id="${esc(it.id)}" aria-label="Изменить: ${LANGS[it.lang].ru}, ${esc(daysLabel(it.days))}, ${esc(it.time)}"><span class="lang-dot" style="--c:var(--${it.lang})"></span><b>${LANGS[it.lang].ru}</b><span class="t">${esc(it.time)}</span><span class="d">${esc(daysLabel(it.days))} · ${it.min} мин</span></button></li>`).join('')}</ul>` : ''}
     <button class="btn" data-a="sc-add">${I.plus}Добавить занятие</button>
+    <div class="f" style="margin-top:16px">Итоги недели по воскресеньям в 18:00<div style="margin-top:5px">${seg('weekly', [[true, 'Присылать'], [false, 'Не нужно']], S.settings.weekly, 'Итоги недели')}</div></div>
     <div style="margin-top:18px;padding-top:16px;border-top:1px solid var(--line)">${notif}</div>
   </section>`;
 }
@@ -1013,6 +1032,8 @@ function syncNative() {
   } catch (e) { }
 }
 async function openLangFromUrl() {
+  const tm = location.search.match(/[?&]tab=(shelf|words|diary|settings)/);
+  if (tm) { ui.tab = tm[1]; try { history.replaceState(null, '', location.pathname); } catch (e) { } render(); return; }
   const m = location.search.match(/[?&]open=(en|pl|zh)/); if (!m) return;
   try { history.replaceState(null, '', location.pathname + location.search.replace(/[?&]open=(en|pl|zh)/, '').replace(/^&/, '?')); } catch (e) { }
   const b = liveBooks().find(x => x.lang === m[1]); if (b) openBook(b.id);
@@ -1041,9 +1062,11 @@ function renderSettings() {
     <div class="f">Размер текста: ${st.font}px<div style="margin-top:5px" class="seg" role="group" aria-label="Размер текста"><button data-a="fs" data-id="-1">A−</button><button data-a="fs" data-id="1">A+</button></div></div>
     <div class="f">Межстрочный интервал<div style="margin-top:5px">${seg('lh', [[1.45, 'Плотно'], [1.65, 'Обычно'], [1.9, 'Свободно']], st.lh, 'Интервал')}</div></div>
     <div class="f">Пиньинь над китайским текстом<div style="margin-top:5px">${seg('pinyin', [[true, 'Показывать'], [false, 'Скрыть']], st.pinyin, 'Пиньинь')}</div></div>
+    <div class="f">Тоны китайского цветом<div style="margin-top:5px">${seg('tones', [[true, 'Да'], [false, 'Нет']], st.tones, 'Тоны цветом')}</div></div>
   </section>
   <section class="panel"><h2 style="margin-bottom:12px">Занятия</h2>
     <div class="f">Цель в день<div style="margin-top:5px">${seg('goal', [[10, '10 мин'], [20, '20 мин'], [30, '30 мин'], [45, '45 мин'], [60, 'час']], st.goal, 'Цель в день')}</div></div>
+    <div class="f">Карточки<div style="margin-top:5px">${seg('cards', [['all', 'Все типы'], ['recog', 'Только узнавание']], st.cards, 'Типы карточек')}</div><p class="hint" style="margin:6px 0 0">По мере запоминания слово показывается по-разному: перевод, пропуск в предложении из книги, вспомнить по переводу, на слух.</p></div>
     <div class="f">Новых слов в повторении за день<div style="margin-top:5px">${seg('newPerDay', [[5, '5'], [10, '10'], [15, '15'], [25, '25'], [40, '40']], st.newPerDay, 'Новых слов в день')}</div></div>
   </section>
   ${renderReminders()}
@@ -1057,7 +1080,7 @@ function renderSettings() {
 function setSetting(k, v) {
   const st = S.settings;
   if (k === 'goal' || k === 'newPerDay' || k === 'lh') v = +v;
-  if (k === 'pinyin') v = v === true || v === 'true';
+  if (k === 'pinyin' || k === 'tones' || k === 'weekly') v = v === true || v === 'true';
   st[k] = v; st.u = now(); save(); applyTheme();
   if (R) { trackPosition(); renderReader(R.p); }
   if (sheetOpen && R) readerMenu();
@@ -1259,6 +1282,7 @@ document.addEventListener('click', e => {
     case 'fs': S.settings.font = Math.max(14, Math.min(30, S.settings.font + (+id))); setSetting('font', S.settings.font); break;
     case 'theme': setSetting('theme', id); break;
     case 'pinyin': setSetting('pinyin', !S.settings.pinyin); break;
+    case 'tones': setSetting('tones', !S.settings.tones); break;
     case 'book-del': {
       const b = curBook(); if (!b || !confirm('Убрать «' + b.title + '» с полки? Сохранённые слова останутся.')) break;
       b.del = true; b.u = now(); idb.del('books', b.id).catch(() => { }); save(300);
@@ -1278,7 +1302,7 @@ document.addEventListener('click', e => {
     case 'rv-start': startReview(id); break;
     case 'rv-show': RV.show = true; renderReview(); break;
     case 'rv-grade': gradeReview(+id); break;
-    case 'rv-speak': { const w = RV && S.words[RV.q[0]]; if (w) speak(w.lemma, w.lang); break; }
+    case 'rv-speak': { const w = RV && S.words[RV.q[0]]; if (w) { const c = pickCtx(w); speakAsync(RV.type === 'listen' && c ? c.s : w.lemma, w.lang, S.settings.rate); } break; }
     case 'rv-close': closeLayer('review'); break;
     case 'set': setSetting(t.dataset.k, id); break;
     case 'key-test': testKey(); break;
@@ -1329,10 +1353,12 @@ async function testKey() {
 }
 
 /* ---------------- start ---------------- */
-(async function start() {
+async function start() {
   try { const st = await idb.get('kv', 'state'); if (st) S = normalize(st); } catch (e) { }
   applyTheme(); render();
   initSync();
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => { });
   syncNative(); openLangFromUrl();
-})();
+}
+// запуск после всех скриптов (learn.js подключается следом)
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else setTimeout(start, 0);

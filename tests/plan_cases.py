@@ -1,5 +1,11 @@
 # Расширенный набор по тест-плану (tests/test-plan.md). Подключается в e2e.py.
 
+async def until(cond, msg, t=8):
+    for _ in range(int(t / 0.2)):
+        if cond(): return
+        await asyncio.sleep(0.2)
+    raise AssertionError(msg)
+
 async def open_book(p, i=0):
     await p.locator('.shelf [data-a="open"]').nth(i).click(); await p.wait_for_selector('.reader #rt w')
 
@@ -229,7 +235,7 @@ async def f11_sync_more(c):
     await p.wait_for_selector('text=Неверная почта или пароль')
     await p.fill('#au-pass', 'secret2'); await p.click('form[data-form="signin"] button[type=submit]')
     await p.wait_for_function('document.getElementById("status").textContent==="Синхронизировано"', timeout=8000)
-    assert len(c.backend.files) == 1
+    await until(lambda: len(c.backend.files) == 1, 'книга не загрузилась в хранилище')
     c2 = Ctx(c.pw, c.browser, c.url, c.claude, c.backend, True, mobile=False); p2 = await c2.open()
     await p2.click('[data-a="tab"][data-id="settings"]'); await p2.fill('#au-email', 'b@x.ru'); await p2.fill('#au-pass', 'secret2'); await p2.click('form[data-form="signin"] button[type=submit]')
     await p2.wait_for_function('Object.values(S.books).filter(b=>!b.del).length===1', timeout=8000)
@@ -244,8 +250,7 @@ async def f11_sync_more(c):
     p.once('dialog', lambda d: asyncio.ensure_future(d.accept()))
     await p.click('[data-a="r-menu"]'); await p.click('[data-a="book-del"]'); await p.wait_for_selector('.reader', state='detached')
     await p.wait_for_timeout(1000)
-    await p.wait_for_function('document.getElementById("status").textContent==="Синхронизировано"', timeout=8000)
-    assert not c.backend.files, list(c.backend.files)
+    await until(lambda: not c.backend.files, 'текст книги не удалён из хранилища')
     await p2.evaluate('sync()'); await p2.wait_for_function('Object.values(S.books).filter(b=>!b.del).length===0', timeout=8000)
     await p2.click('[data-a="tab"][data-id="shelf"]'); assert await p2.locator('.continue').count() == 0
     c.errors.clear(); c2.errors.clear()

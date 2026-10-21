@@ -321,3 +321,94 @@ table.tl td.n,table.tl th.n{text-align:right;font-variant-numeric:tabular-nums}
 .pill-on{display:inline-flex;align-items:center;gap:6px;background:var(--soft);color:var(--accent);border-radius:999px;padding:6px 12px;font-weight:500;font-size:14px}
 .pill-on::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--accent)}
 :root[data-theme="eink"] .plan-item,:root[data-theme="eink"] .sched{border:2px solid #000}
+
+/* ---------- обучение: перед главой, итог главы ---------- */
+.prep{margin:0 0 26px;border:1px solid var(--line);border-radius:var(--r);background:var(--card);box-shadow:var(--sh-raise-sm);font-family:var(--ui);font-size:15px}
+.prep > summary{cursor:pointer;list-style:none;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:12px 16px;font-weight:500}
+.prep > summary::-webkit-details-marker{display:none}
+.prep > summary::after{content:"▾";color:var(--faint);margin-left:auto}
+.prep[open] > summary::after{content:"▴"}
+.prep-body{padding:0 16px 14px}
+.kw{list-style:none;margin:0 0 10px;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:6px}
+.kw button{width:100%;text-align:left;border:1px solid var(--line);background:var(--paper);border-radius:10px;padding:8px 11px;display:flex;flex-wrap:wrap;gap:4px 8px;align-items:baseline;color:var(--ink)}
+.kw b{font-family:var(--book);font-weight:600}
+.kw .kw-py{color:var(--accent);font-size:13px}
+.kw span:last-child{color:var(--muted);font-size:14px}
+.prev{margin-top:12px;padding-top:10px;border-top:1px solid var(--line)}
+.prev-text{font-family:var(--book);margin:0 0 4px}
+.ch-end{margin-top:36px;padding:18px;border:1px solid var(--line);border-radius:var(--r);background:var(--card);box-shadow:var(--sh-raise-sm);font-family:var(--ui)}
+.ch-end h3{margin-bottom:10px}
+.ch-stats{list-style:none;margin:0 0 14px;padding:0;display:flex;flex-wrap:wrap;gap:8px 22px}
+.ch-stats li{display:flex;flex-direction:column}
+.ch-stats b{font:600 24px/1.1 var(--display)}
+.ch-stats span{color:var(--muted);font-size:13px}
+.cov-hint{margin:6px 0 12px}
+
+/* ---------- озвучка ---------- */
+.player{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:center;padding:8px 12px;border-top:1px solid var(--line);background:var(--card);font-family:var(--ui)}
+.player .iconbtn{font-weight:600;width:38px;height:38px}
+.text w.rd{background:var(--soft)}
+.text w.rdw{background:var(--accent);color:var(--on-accent)}
+:root[data-theme="eink"] .text w.rd{background:#EEE;text-decoration:underline}
+
+/* ---------- тоны ---------- */
+.t1{color:#B03A2E}.t2{color:#2E7D4F}.t3{color:#2C5D9E}.t4{color:#7B3F8C}.t0,.t5{color:var(--faint)}
+:root[data-theme="night"] .t1{color:#E8897C}:root[data-theme="night"] .t2{color:#7FC79A}:root[data-theme="night"] .t3{color:#8DB4E8}:root[data-theme="night"] .t4{color:#C59AD6}
+:root[data-theme="eink"] .t1,:root[data-theme="eink"] .t2,:root[data-theme="eink"] .t3,:root[data-theme="eink"] .t4{color:#000}
+
+/* ---------- карточка слова: подробности ---------- */
+.xtra{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:12px 0 0;font-size:14.5px}
+.xtra dt{color:var(--muted)}
+.xtra dd{margin:0}
+.ff{margin-top:10px;font-size:14.5px;padding:9px 12px;border-left:3px solid var(--danger);background:color-mix(in srgb,var(--danger) 8%,var(--card));border-radius:0 8px 8px 0}
+
+/* ---------- повторение: типы карточек ---------- */
+.card-kind{color:var(--muted);font-size:13.5px;margin:0 0 10px}
+.leech-tag{color:var(--danger)}
+.gap{display:inline-block;min-width:3em;border-bottom:2px solid var(--accent);color:var(--accent)}
+.rv-answer{display:flex;gap:8px;margin-top:16px}
+.rv-answer .in{flex:1}
+.check{font-weight:500;margin:10px 0 0}
+.check.ok{color:var(--accent)}.check.almost{color:#9A6B12}.check.no{color:var(--danger)}
+.leech{text-align:left;margin-top:14px;padding:10px 12px;border-radius:10px;background:var(--paper);box-shadow:var(--sh-inset);font-size:14.5px}
+.leech p{margin:6px 0 0;white-space:pre-line}
+
+/* ---------- упражнения, ошибки, разговор, грамматика ---------- */
+.ex-item{margin-bottom:14px}
+.ex-q{font-family:var(--book);margin:0 0 6px}
+.ex-res{margin-top:6px;padding:9px 12px;border-radius:10px;font-size:14.5px;border-left:3px solid}
+.ex-res.ok{border-color:var(--accent);background:var(--soft)}
+.ex-res.part{border-color:#C9A227;background:color-mix(in srgb,#C9A227 10%,var(--card))}
+.ex-res.no{border-color:var(--danger);background:color-mix(in srgb,var(--danger) 8%,var(--card))}
+.ex-res p{margin:6px 0 0;font-family:var(--book)}
+.ex-mist{margin-top:12px;font-size:14.5px}
+.ex-mist ul,.mist ul{margin:6px 0 0;padding-left:18px}
+.practice{margin-bottom:12px;position:relative;overflow:hidden}
+.practice::before,.grammar::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--c)}
+.grammar{position:relative;overflow:hidden}
+.mist{margin-top:10px;font-size:14.5px}
+.mist summary{cursor:pointer;color:var(--muted)}
+.mist li{margin:4px 0}
+.chat{max-height:46vh;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding:4px 2px 10px}
+.msg{max-width:85%;padding:9px 12px;border-radius:14px;font-family:var(--book);line-height:1.45}
+.msg.me{align-self:flex-end;background:var(--accent);color:var(--on-accent);border-bottom-right-radius:4px}
+.msg.ai{align-self:flex-start;background:var(--paper);box-shadow:var(--sh-inset);border-bottom-left-radius:4px}
+.msg .fix{margin-top:6px;padding-top:6px;border-top:1px dashed var(--line-2);font-family:var(--ui);font-size:13.5px;color:var(--muted)}
+.chat-in{display:flex;gap:8px;align-items:flex-end}
+.chat-in .in{flex:1;min-height:48px}
+.gr-topics{margin-top:12px}
+.gr-t{border-top:1px solid var(--line);padding:8px 0}
+.gr-t summary{cursor:pointer;font-weight:500;display:flex;gap:10px;align-items:center;justify-content:space-between}
+.gr-t.done summary span:first-child{color:var(--muted)}
+.gr-t p{margin:8px 0 0;font-size:14.5px}
+.gr-ex{font-family:var(--book)}
+.roadmap{list-style:none;margin:0;padding:0;font-size:14.5px}
+.roadmap li{padding:3px 0;color:var(--muted)}
+.roadmap li.seen{color:var(--ink)}
+.roadmap li span[aria-hidden]{color:var(--accent)}
+.delta{color:var(--accent);font-size:12.5px;margin-left:4px}
+:root[data-theme="eink"] .prep,:root[data-theme="eink"] .ch-end,:root[data-theme="eink"] .practice{border:2px solid #000}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:14px 16px;box-shadow:var(--sh-raise-sm)}
+.stat .v{font:600 28px/1.1 var(--display)}
+.stat .l{color:var(--muted);font-size:13.5px;margin-top:4px}
+:root[data-theme="eink"] .stat{border:2px solid #000}

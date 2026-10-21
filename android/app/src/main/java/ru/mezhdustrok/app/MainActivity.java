@@ -10,6 +10,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.Window;
@@ -89,7 +90,19 @@ public class MainActivity extends Activity {
             }
         });
 
-        tts = new TextToSpeech(this, status -> ttsReady = status == TextToSpeech.SUCCESS);
+        tts = new TextToSpeech(this, status -> {
+            ttsReady = status == TextToSpeech.SUCCESS;
+            if (ttsReady) tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                @Override public void onStart(String id) { }
+                @Override public void onDone(String id) { done(id); }
+                @Override public void onError(String id) { done(id); }
+                @Override public void onStop(String id, boolean interrupted) { done(id); }
+                private void done(String id) {
+                    if (id == null || id.equals("word")) return;
+                    runOnUiThread(() -> web.evaluateJavascript("window.__ttsDone && window.__ttsDone('" + id.replaceAll("[^A-Za-z0-9]", "") + "')", null));
+                }
+            });
+        });
 
         if (savedInstanceState != null) web.restoreState(savedInstanceState);
         else web.loadUrl(urlFor(getIntent()));
@@ -166,6 +179,17 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public boolean canSpeak() { return ttsReady; }
+
+        @JavascriptInterface
+        public void speakId(String text, String lang, double rate, String id) {
+            if (!ttsReady || text == null) return;
+            tts.setLanguage(Locale.forLanguageTag(lang));
+            tts.setSpeechRate((float) Math.max(0.5, Math.min(2.0, rate)));
+            tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, id);
+        }
+
+        @JavascriptInterface
+        public void stopSpeaking() { if (tts != null) tts.stop(); }
 
         @JavascriptInterface
         public void setSchedule(String json) { Reminders.save(getApplicationContext(), json); }
