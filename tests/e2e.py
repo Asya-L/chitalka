@@ -29,6 +29,7 @@ CDN = {
     'supabase-js': '@supabase/supabase-js/dist/umd/supabase.js',
     'jszip': 'jszip/dist/jszip.min.js',
     'pinyin-pro': 'pinyin-pro/dist/index.js',
+    'hanzi-writer@': 'hanzi-writer/dist/hanzi-writer.min.js',
 }
 
 # ---------------------------------------------------------------- mock Claude
@@ -172,6 +173,12 @@ class Ctx:
         vp = {'width': 390, 'height': 844} if self.mobile else {'width': 1280, 'height': 860}
         self.ctx = await self.browser.new_context(viewport=vp, has_touch=self.mobile, locale='ru-RU', timezone_id='Europe/Kaliningrad')
         async def cdn(route):
+            from urllib.parse import unquote
+            m = re.search(r'hanzi-writer-data@[^/]+/(.+)\.json', unquote(route.request.url))
+            if m:
+                f = os.path.join(VENDOR, 'hanzi-writer-data', m.group(1) + '.json')
+                if os.path.exists(f): return await route.fulfill(path=f, content_type='application/json', headers={'access-control-allow-origin': '*'})
+                return await route.fulfill(status=404, body='', headers={'access-control-allow-origin': '*'})
             for k, p in CDN.items():
                 if k in route.request.url: return await route.fulfill(path=os.path.join(VENDOR, p), content_type='application/javascript')
             await route.abort()
@@ -183,6 +190,9 @@ class Ctx:
         await self.ctx.route('https://translate.googleapis.com/**', self.free.google)
         await self.ctx.route('https://api.mymemory.translated.net/**', self.free.mymemory)
         await self.ctx.route('https://en.wiktionary.org/**', self.free.wikt)
+        if not getattr(self, 'data', False):
+            # по умолчанию словари недоступны — так проверяется работа без них; кейсы x* включают их
+            await self.ctx.route(re.compile(r'.*/data/[^/]+$'), lambda r: r.fulfill(status=404, body=''))
         if not self.sync:
             await self.ctx.route('**/config.js', lambda r: r.fulfill(status=200, content_type='application/javascript', body='window.APP_CONFIG={};'))
         if getattr(self, 'init_script', None): await self.ctx.add_init_script(self.init_script)
@@ -529,8 +539,9 @@ async def c11_native_schedule(c):
 
 exec(open(os.path.join(T, 'plan_cases.py'), encoding='utf-8').read())
 exec(open(os.path.join(T, 'learn_cases.py'), encoding='utf-8').read())
+exec(open(os.path.join(T, 'extras_cases.py'), encoding='utf-8').read())
 
-CASES = [c01_empty_and_import, c02_read_tap_save, c03_chinese, c04_review, c05_errors_and_settings, c06_desktop, c07_sync_two_devices, c08_fallback, c09_eink_android, c10_schedule_push, c11_native_schedule] + PLAN_CASES + LEARN_CASES
+CASES = [c01_empty_and_import, c02_read_tap_save, c03_chinese, c04_review, c05_errors_and_settings, c06_desktop, c07_sync_two_devices, c08_fallback, c09_eink_android, c10_schedule_push, c11_native_schedule] + PLAN_CASES + LEARN_CASES + EXTRAS_CASES
 
 async def main():
     sel = sys.argv[1:]

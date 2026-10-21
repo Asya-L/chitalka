@@ -49,7 +49,7 @@ function markPassed(paras, lang, bookTitle) {
 
 /** Понятность набора абзацев: доля знакомых слов среди всех слов текста и незнакомые слова с частотой. */
 function coverage(paras, lang, ks) {
-  ks = ks || knownSet(lang);
+  ks = ks || effKnown(lang);
   let total = 0, known = 0; const unk = new Map();
   paras.forEach((text, pi) => {
     for (const tk of tokenize(text, lang)) {
@@ -66,8 +66,9 @@ const covLabel = p => p >= 0.95 ? 'читается легко' : p >= 0.9 ? 'с
 const COV = {};   // id книги → {pct, at}
 async function bookCoverage(id) {
   const b = S.books[id]; if (!b) return null;
-  const kc = knownCount(b.lang); if (kc < MIN_KNOWN) return null;
-  const hit = COV[id]; if (hit && Math.abs(hit.at - kc) < 40) return hit;
+  if (!covReady(b.lang)) return null;
+  const kc = knownCount(b.lang) + ':' + S.settings.levels[b.lang] + ':' + freqReady(b.lang);
+  const hit = COV[id]; if (hit && hit.at === kc) return hit;
   const c = R && R.id === id ? R.c : await idb.get('books', id).catch(() => null); if (!c) return null;
   const paras = []; for (const ch of c.chapters) for (const p of ch.p) { paras.push(p); if (paras.length > 400) break; }
   const r = coverage(paras, b.lang);
@@ -78,14 +79,14 @@ async function refreshShelfCoverage() {
   if (covBusy) return; covBusy = true;
   try {
     let changed = false;
+    await Promise.all([...new Set(liveBooks().map(b => b.lang))].map(ensureFreq));
     for (const b of liveBooks()) { const before = COV[b.id] && COV[b.id].pct; const r = await bookCoverage(b.id); if (r && r.pct !== before) changed = true; }
     if (changed && ui.tab === 'shelf' && !R && !RV && !sheetOpen) render();
   } finally { covBusy = false; }
 }
 function covBadge(id) { const c = COV[id]; return c ? `понятно ${Math.round(c.pct * 100)}%` : ''; }
 function importHint(book) {
-  const kc = knownCount(book.lang);
-  if (kc < MIN_KNOWN) return '';
+  if (!covReady(book.lang)) return '';
   const paras = []; for (const ch of book.chapters) for (const p of ch.p) { paras.push(p); if (paras.length > 300) break; }
   const r = coverage(paras, book.lang);
   const pct = Math.round(r.pct * 100);
@@ -95,13 +96,13 @@ function importHint(book) {
 /* ================= 2 и 14. Перед главой: ключевые слова и «что было раньше» ================= */
 function prepHTML() {
   const ch = R.c.chapters[R.ch]; const L = R.lang;
-  const kc = knownCount(L);
-  const cov = kc >= MIN_KNOWN ? coverage(ch.p, L) : null;
+  const cov = covReady(L) ? coverage(ch.p, L) : null;
   R.chCov = cov;
   const open = R.p === 0 && !EINK;
   return `<details class="prep" id="prep"${open ? ' open' : ''}>
     <summary><span>Перед чтением</span>${cov ? `<span class="hint">понятно ${Math.round(cov.pct * 100)}% · ${cov.unk.size} ${plural(cov.unk.size, 'незнакомое слово', 'незнакомых слова', 'незнакомых слов')}</span>` : ''}</summary>
     <div class="prep-body">
+      ${miniReviewBtn() ? `<div class="row" style="margin-bottom:10px">${miniReviewBtn()}</div>` : ''}
       <div id="prep-words">${R.prep ? prepWordsHTML(R.prep) : '<button class="btn sm" data-a="prep-load">Показать ключевые слова главы</button>'}</div>
       ${R.ch > 0 ? `<div class="prev" id="prep-prev">${R.prevSum ? prevHTML(R.prevSum) : getKey() ? '<button class="btn ghost sm" data-a="prev-load">Что было в прошлой главе</button>' : ''}</div>` : ''}
     </div>
@@ -120,11 +121,11 @@ function prepWordsHTML(p) {
 async function loadPrep() {
   const ch = R.c.chapters[R.ch]; const L = R.lang; const r0 = R;
   R.prep = { busy: true, items: [] }; paintPrep();
-  const ck = ['K', R.id, R.ch, S.settings.target, knownCount(L) >= MIN_KNOWN ? 'f' : 'c'].join('|');
+  const ck = ['K', R.id, R.ch, S.settings.target, covReady(L) ? 'f' + S.settings.levels[L] : 'c'].join('|');
   try {
     let p = await idb.get('tr', ck).catch(() => null);
     if (!p) {
-      const cov = knownCount(L) >= MIN_KNOWN ? coverage(ch.p, L) : null;
+      const cov = covReady(L) ? coverage(ch.p, L) : null;
       if (cov) {
         // по словарю: частые незнакомые слова главы
         let cand = [...cov.unk.entries()].filter(([k, u]) => u.n >= 2 && (L === 'zh' || k.length > 2)).sort((a, b) => b[1].n - a[1].n || b[0].length - a[0].length).slice(0, 8);
@@ -199,7 +200,7 @@ function chapterSummaryInner() {
   const text = ch.p.join('\n');
   const savedHere = liveWords(L).filter(w => w.st === 'learn' && (w.ctxs || []).some(c => text.includes(c.s.replace(/^…|…$/g, '').slice(0, 40)))).length;
   const start = R.chStart || { unk: null };
-  const kNow = knownSet(L);
+  const kNow = effKnown(L);
   const newKnown = start.unkKeys ? start.unkKeys.filter(k => kNow.has(k)).length : 0;
   const met = start.unkKeys ? start.unkKeys.length : 0;
   return `<h3>Итог главы</h3>
@@ -212,7 +213,7 @@ function chapterSummaryInner() {
 }
 function snapshotChapter() {
   if (!R) return;
-  const ch = R.c.chapters[R.ch]; const ks = knownSet(R.lang);
+  const ch = R.c.chapters[R.ch]; const ks = effKnown(R.lang);
   const cov = coverage(ch.p, R.lang, ks);
   R.chStart = { unkKeys: [...cov.unk.keys()] };
 }
@@ -274,9 +275,9 @@ function hashStr(s) { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0
 function pickCtx(w) { const cs = w.ctxs || []; return cs.length ? cs[(w.srs.reps || 0) % cs.length] : null; }
 function cardType(w) {
   if (S.settings.cards === 'recog') return 'recog';
-  const reps = w.srs.reps || 0; if (reps < 2) return 'recog';
-  const c = pickCtx(w);
-  const opts = [];
+  const reps = w.srs.reps || 0; const c = pickCtx(w);
+  if (reps < 2) { const x = extraCardTypes(w, reps, c); return x.length && hashStr(w.id + ':' + reps) % 2 ? x[0] : 'recog'; }
+  const opts = extraCardTypes(w, reps, c);
   if (c && clozeOk(c, w)) opts.push('cloze');
   if (reps >= 4) opts.push('produce');
   if (canSpeak) opts.push('listen');
@@ -299,16 +300,17 @@ function checkAnswer(w, input, c) {
   return 'no';
 }
 function reviewCardHTML(w) {
-  const L = w.lang; const c = pickCtx(w); const T = RV.type || (RV.type = cardType(w));
+  const L = w.lang; const c = pickCtx(w); const T = RV.type || (RV.type = cardType(w)); if (['order', 'dictation'].includes(T) && !c) RV.type = 'recog';
   const ctxHTML = (blank) => c ? `<div class="ctx${L === 'zh' ? ' zh' : ''}" lang="${L}">${blank ? blankOut(c.s, c.f, L) : highlight(c.s, c.f, L)}</div><div class="src">${esc(c.b || '')}</div>` : '';
   const speakBtn = canSpeak ? `<button class="btn ghost sm" data-a="rv-speak" style="margin-top:8px">${I.speak}Послушать</button>` : '';
   const answer = RV.show ? `<div class="ans" aria-live="polite">
-      ${T !== 'recog' ? `<div class="term${L === 'zh' ? ' zh' : ''}" lang="${L}" style="font-size:30px">${esc(w.lemma)}</div>` : ''}
+      ${T !== 'recog' && T !== 'choice' ? `<div class="term${L === 'zh' ? ' zh' : ''}" lang="${L}" style="font-size:30px">${esc(w.lemma)}</div>` : ''}
       ${w.py ? `<div class="w-py" style="margin-top:4px">${pyHTML(w.lemma, w.py)}</div>` : ''}
-      ${RV.check ? `<p class="check ${RV.check}">${RV.check === 'ok' ? 'Верно' : RV.check === 'almost' ? 'Почти: проверь буквы с диакритикой' : 'Не совсем — правильный ответ выше'}</p>` : ''}
+      ${RV.check ? `<p class="check ${RV.check}">${RV.check === 'ok' ? 'Верно' : RV.check === 'almost' ? (T === 'order' || T === 'dictation' ? 'Почти: сравни с правильным вариантом' : 'Почти: проверь буквы с диакритикой') : 'Не совсем — правильный ответ выше'}</p>` : ''}
       <div class="w-tr">${esc(w.tr || '—')}</div>${w.alt ? `<div class="w-alt">Ещё: ${esc(w.alt)}</div>` : ''}
       ${extraHTML(w)}
-      ${T !== 'recog' && T !== 'listen' ? ctxHTML(false) : ''}
+      ${T !== 'recog' && T !== 'listen' && T !== 'choice' ? ctxHTML(false) : ''}
+      ${c ? speechBlock(c.s, L, 'rv') : ''}
       ${c && c.tr ? `<div class="w-ctxtr" style="text-align:left;margin-top:12px">${esc(c.tr)}</div>` : ''}
       ${w.leech ? `<div class="leech"><b>Трудное слово</b> — забывается уже ${w.srs.lapses} раз.${w.hint ? `<p>${esc(w.hint)}</p>` : w.hintBusy ? '<div class="skeleton"></div>' : getKey() ? ' <button class="btn ghost sm" data-a="rv-leech">Разобрать иначе</button>' : ''}</div>` : ''}
     </div>` : '';
@@ -316,6 +318,7 @@ function reviewCardHTML(w) {
   let front;
   if (T === 'cloze') front = `<p class="card-kind">Вставь слово</p>${ctxHTML(true)}${c && c.tr ? `<p class="hint">${esc(c.tr)}</p>` : `<p class="hint">Подсказка: ${esc(w.tr || '')}</p>`}`;
   else if (T === 'produce') front = `<p class="card-kind">Как сказать на языке книги?</p><div class="term" style="font-size:30px">${esc(w.tr || '')}</div>${w.pos ? `<p class="hint">${esc(w.pos)}</p>` : ''}`;
+  else if (EXTRA_CARDS.includes(T)) front = extraCardFront(T, w, c);
   else if (T === 'listen') front = `<p class="card-kind">Послушай и вспомни</p><button class="btn primary" data-a="rv-speak">${I.speak}Слушать ещё раз</button>${RV.show ? ctxHTML(false) : ''}`;
   else front = `<div class="term${L === 'zh' ? ' zh' : ''}" lang="${L}">${esc(w.lemma)}</div>${speakBtn}${ctxHTML(false)}`;
   const input = needsInput && !RV.show ? `<form data-form="rv-answer" class="rv-answer"><label class="sr" for="rv-in">Ответ</label><input class="in" id="rv-in" name="a" autocomplete="off" autocapitalize="off" spellcheck="false" lang="${L}" placeholder="Напиши слово"><button class="btn" type="submit">Проверить</button></form>` : '';
@@ -436,7 +439,7 @@ function vocabHTML() {
   return `<section class="sec"><h2 style="margin-bottom:12px">Словарь</h2><div class="stats">${langs.map(l => {
     const n = knownCount(l), m = knownSince(l, 30), learn = liveWords(l).filter(w => w.st === 'learn').length;
     return `<div class="stat" style="border-top:4px solid var(--${l})"><div class="v">≈ ${fmtNum(n)}</div><div class="l">${LANGS[l].ru}: знакомых слов${m ? ` · +${fmtNum(m)} за 30 дней` : ''} · учу ${learn}</div></div>`;
-  }).join('')}</div>${langs.some(l => knownCount(l) < MIN_KNOWN) ? `<p class="hint" style="margin-top:8px">Знакомыми становятся слова, мимо которых ты прошла при чтении, не нажав на них. Понятность книг появится примерно после ${MIN_KNOWN} знакомых слов в языке.</p>` : ''}</section>`;
+  }).join('')}</div>${langs.some(l => !covReady(l)) ? `<p class="hint" style="margin-top:8px">Знакомыми становятся слова, мимо которых ты прошла при чтении, не нажав на них. Понятность книг появится примерно после ${MIN_KNOWN} знакомых слов в языке.</p>` : ''}</section>`;
 }
 
 /* ================= Claude: общие помощники ================= */

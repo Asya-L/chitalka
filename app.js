@@ -61,7 +61,7 @@ const DEV = (() => { let d = null; try { d = localStorage.getItem('mezhdu-dev');
 const getKey = () => { try { return localStorage.getItem(KEY_LS) || ''; } catch (e) { return ''; } };
 
 function fresh() {
-  return { v: 1, settings: { u: 0, target: 'ru', model: MODELS[0].id, font: 19, lh: 1.65, theme: 'auto', pinyin: true, goal: 20, newPerDay: 15, levels: { en: 'B1', pl: 'B1', zh: 'HSK1' }, schedule: [], tz: '', tones: true, cards: 'all', rate: 0.9, weekly: true }, books: {}, words: {}, log: {}, known: {}, mistakes: {}, grammar: {} };
+  return { v: 1, settings: { u: 0, target: 'ru', model: MODELS[0].id, font: 19, lh: 1.65, theme: 'auto', pinyin: true, goal: 20, newPerDay: 15, levels: { en: 'B1', pl: 'B1', zh: 'HSK1' }, schedule: [], tz: '', tones: true, cards: 'all', rate: 0.9, weekly: true }, books: {}, words: {}, log: {}, known: {}, mistakes: {}, grammar: {}, quotes: {}, goals: {} };
 }
 function normalize(x) {
   const f = fresh();
@@ -69,14 +69,14 @@ function normalize(x) {
   const lv = Object.assign({}, f.settings.levels, (x.settings && x.settings.levels) || {});
   x.settings = Object.assign(f.settings, x.settings || {}); x.settings.levels = lv;
   x.books = x.books || {}; x.words = x.words || {}; x.log = x.log || {}; x.v = 1;
-  x.known = x.known || {}; x.mistakes = x.mistakes || {}; x.grammar = x.grammar || {};
+  x.known = x.known || {}; x.mistakes = x.mistakes || {}; x.grammar = x.grammar || {}; x.quotes = x.quotes || {}; x.goals = x.goals || {};
   return x;
 }
 function merge(a, b) {
   a = normalize(clone(a)); b = normalize(clone(b));
   const out = fresh();
   out.settings = (b.settings.u || 0) > (a.settings.u || 0) ? b.settings : a.settings;
-  for (const k of ['books', 'words', 'mistakes', 'grammar']) {
+  for (const k of ['books', 'words', 'mistakes', 'grammar', 'quotes', 'goals']) {
     const o = {};
     for (const id of new Set([...Object.keys(a[k]), ...Object.keys(b[k])])) {
       const x = a[k][id], y = b[k][id];
@@ -290,9 +290,15 @@ async function basicLookup(o) {
 }
 
 async function lookup(o, force) {
-  if (!getKey()) { o.aiErr = ''; return basicLookup(o); }
-  try { const r = await aiLookup(o, force); o.aiErr = ''; return r; }
-  catch (e) { o.aiErr = e.message; return basicLookup(o); }
+  try {
+    if (!getKey()) { o.aiErr = ''; return await basicLookup(o); }
+    try { const r = await aiLookup(o, force); o.aiErr = ''; return r; }
+    catch (e) { o.aiErr = e.message; return await basicLookup(o); }
+  } catch (e) {
+    // без сети и без Claude: для китайского остаётся офлайн-словарь CC-CEDICT
+    if (o.lang === 'zh') { const c = await cedictLookup(o.term).catch(() => null); if (c) return c; }
+    throw e;
+  }
 }
 async function aiLookup(o, force) {
   const ck = ['v2', o.lang, S.settings.target, S.settings.levels[o.lang], o.term, o.ctx].join('|');
@@ -453,7 +459,7 @@ function renderShelf() {
       <div class="ch">${cur.last ? esc(ch && ch.t ? ch.t : '') : 'Ещё не открыта'}${cur.last ? ` <span aria-hidden="true">·</span> прочитано ${pctLabel(cur)}` : ''}</div>
       <div class="bar" aria-hidden="true"><i style="width:${Math.round((cur.pct || 0) * 100)}%"></i></div>
       <div class="row"><button class="btn primary" data-a="open" data-id="${cur.id}">${cur.last ? 'Читать дальше' : 'Начать читать'}</button>
-      <span class="hint">Сегодня ${Math.round(t.min)} из ${S.settings.goal} мин${covBadge(cur.id) ? ' · ' + covBadge(cur.id) : ''}</span></div>
+      <span class="hint">Сегодня ${Math.round(t.min)} из ${S.settings.goal} мин${covBadge(cur.id) ? ' · ' + covBadge(cur.id) : ''}${etaLabel(cur) ? ' · ' + etaLabel(cur) : ''}</span></div>
     </div>
   </section>
   ${renderPlanToday()}
@@ -463,7 +469,8 @@ function renderShelf() {
       ${list.map(b => `<button class="book" data-a="open" data-id="${b.id}">${cover(b)}<div class="t" lang="${b.lang}">${esc(b.title)}</div><div class="a">${b.last ? pctLabel(b) : 'новая'}${covBadge(b.id) ? ' · ' + covBadge(b.id) : b.author ? ' · ' + esc(b.author) : ''}</div></button>`).join('')}
       <div><button class="addbook" data-a="add">${I.plus}<span>Добавить книгу<br><span class="hint">EPUB, FB2, TXT</span></span></button></div>
     </div>
-  </section>`;
+  </section>
+  ${goalsHTML()}${quotesShelfHTML()}`;
 }
 async function importFiles(files) {
   for (const file of files) {
@@ -471,7 +478,7 @@ async function importFiles(files) {
     let book;
     try { book = await BookParse.parseBook(file); }
     catch (e) { console.warn(e); toast(e && e.message && /[а-я]/i.test(e.message) ? e.message : 'Не получилось открыть «' + file.name + '». Проверь, что это EPUB, FB2 или TXT.'); continue; }
-    await new Promise(res => importDialog(book, res));
+    await ensureFreq(book.lang); await new Promise(res => importDialog(book, res));
   }
 }
 function importDialog(book, done) {
@@ -482,7 +489,7 @@ function importDialog(book, done) {
       <label class="f">Автор<input class="in" name="author" value="${esc(d.author)}"></label>
       <div class="f">Язык книги<div class="seg" role="group" aria-label="Язык книги" style="margin-top:5px;display:flex">${Object.keys(LANGS).map(l => `<button type="button" data-a="imp-lang" data-id="${l}" aria-pressed="${d.lang === l}">${LANGS[l].ru}</button>`).join('')}</div></div>
       <p class="hint">${book.chapters.length} ${plural(book.chapters.length, 'глава', 'главы', 'глав')}, около ${fmtNum(BookParse.countWords(book.chapters, d.lang))} ${d.lang === 'zh' ? 'иероглифов' : 'слов'}.</p>
-      ${importHint(Object.assign({}, book, { lang: d.lang }))}
+      ${importHint(Object.assign({}, book, { lang: d.lang }))}${freqReady(d.lang) ? '' : (ensureFreq(d.lang).then(m => { if (m && importDialog.cur && importDialog.cur.d === d && !d.done) { const f = document.querySelector('form[data-form="import"]'); if (f) { d.title = f.title.value; d.author = f.author.value; } paint(); } }), '')}
       <div class="row" style="margin-top:8px"><button class="btn primary" type="submit">Поставить на полку</button><button class="btn ghost" type="button" data-a="sheet-close">Отмена</button></div>
     </form>`, { center: true, onClose: () => { if (!d.done) done(); } });
   importDialog.cur = { d, book, done, paint };
@@ -532,22 +539,27 @@ async function openBook(id) {
   }
   const pos = b.pos || { c: 0, p: 0 };
   R = { id, c, ch: Math.min(pos.c || 0, c.chapters.length - 1), p: pos.p || 0, lang: b.lang, tapped: new Set() };
+  if (!freqReady(b.lang)) ensureFreq(b.lang).then(m => { if (m && R && R.id === id && !R.prep) { const pd = $('#prep'); if (pd) pd.outerHTML = prepHTML(); } });
   b.last = now(); b.u = now(); save(5000);
   openLayer('reader'); renderReader(R.p); startActivity();
   if (NATIVE) try { NATIVE.setPaging(true); } catch (e) { }
 }
 function curBook() { return R && S.books[R.id]; }
-function renderPara(text, i, lang, saved, py) {
+function renderPara(text, i, lang, saved, py, fmt, img) {
+  if (img) return `<p data-i="${i}" class="img-p"><img src="${esc(img)}" alt="Иллюстрация" loading="lazy"></p>`;
   let h = '';
+  const styleAt = o => { if (!fmt) return ''; for (const r of fmt) if (o >= r[0] && o < r[1]) return r[2]; return ''; };
+  const wrap = (x, f) => !f ? x : (f.includes('b') ? '<b>' : '') + (f.includes('i') ? '<i>' : '') + x + (f.includes('i') ? '</i>' : '') + (f.includes('b') ? '</b>' : '');
   for (const tk of tokenize(text, lang)) {
-    if (!tk.w) { h += esc(tk.t); continue; }
+    const f = styleAt(tk.o);
+    if (!tk.w) { h += wrap(esc(tk.t), f); continue; }
     const k = keyOf(tk.t, lang);
     const cls = saved.has(k) ? ' class="s"' : '';
     if (py && isHan(tk.t)) {
       let arr = []; try { arr = pinyinPro.pinyin(tk.t, { type: 'array' }); } catch (e) { }
       const tn = S.settings.tones ? toneNums(tk.t) : [];
-      h += `<w data-k="${esc(k)}" data-o="${tk.o}" data-t="${esc(tk.t)}"${cls}><ruby>${Array.from(tk.t).map((c, j) => esc(c) + '<rt' + (tn[j] ? ` class="t${tn[j]}"` : '') + '>' + esc(arr[j] || '') + '</rt>').join('')}</ruby></w>`;
-    } else h += `<w data-k="${esc(k)}" data-o="${tk.o}"${cls}>${esc(tk.t)}</w>`;
+      h += wrap(`<w data-k="${esc(k)}" data-o="${tk.o}" data-t="${esc(tk.t)}"${cls}><ruby>${Array.from(tk.t).map((c, j) => esc(c) + '<rt' + (tn[j] ? ` class="t${tn[j]}"` : '') + '>' + esc(arr[j] || '') + '</rt>').join('')}</ruby></w>`, f);
+    } else h += wrap(`<w data-k="${esc(k)}" data-o="${tk.o}"${cls}>${esc(tk.t)}</w>`, f);
   }
   return `<p data-i="${i}">${h}</p>`;
 }
@@ -556,14 +568,15 @@ function renderReader(scrollToP) {
   const py = L === 'zh' && S.settings.pinyin && !!window.pinyinPro;
   const saved = savedKeys(L);
   const n = R.c.chapters.length;
-  $('#reader-root').innerHTML = `<div class="reader${EINK ? ' paged' : ''}" role="dialog" aria-label="${esc(b.title)}">
+  R.spread = spreadOn() && !EINK;
+  $('#reader-root').innerHTML = `<div class="reader${EINK ? ' paged' : ''}${R.spread ? ' spread' : ''}" role="dialog" aria-label="${esc(b.title)}">
     <div class="r-top"><button class="iconbtn" data-a="r-close" aria-label="На полку">${I.back}</button>
       <div class="tt">${esc(b.title)}</div>
       <button class="iconbtn" data-a="r-menu" aria-label="Оглавление и вид текста">${I.menu}</button></div>
     <div class="r-scroll" id="rs"><div class="r-col">
       ${ch.t ? `<h2 lang="${L}">${esc(ch.t)}</h2><div class="orn" aria-hidden="true">✦ ✦ ✦</div>` : ''}
       ${prepHTML()}
-      <div class="text${L === 'zh' ? ' zh' : ''}${py ? ' py' : ''}" id="rt" lang="${L === 'zh' ? 'zh-CN' : L}" style="--fs:${S.settings.font}px;--lh:${S.settings.lh}">${ch.p.map((p, i) => renderPara(p, i, L, saved, py)).join('')}</div>
+      <div class="text${L === 'zh' ? ' zh' : ''}${py ? ' py' : ''}" id="rt" lang="${L === 'zh' ? 'zh-CN' : L}" style="--fs:${S.settings.font}px;--lh:${S.settings.lh}">${ch.p.map((p, i) => renderPara(p, i, L, saved, py, ch.fmt && ch.fmt[i], ch.img && ch.img[i])).join('')}</div>
       ${chapterEndHTML()}
       <nav class="r-nav" aria-label="Главы">
         ${R.ch > 0 ? `<button class="btn" data-a="r-ch" data-id="${R.ch - 1}">Предыдущая глава</button>` : '<span></span>'}
@@ -575,14 +588,14 @@ function renderReader(scrollToP) {
   if (!R.chStart || R.chStart.ch !== R.ch) { snapshotChapter(); R.chStart.ch = R.ch; }
   const pd = $('#prep'); if (pd && pd.open && !R.prep) setTimeout(loadPrep, 0);
   const rs = $('#rs');
-  if (scrollToP) { const el = rs.querySelector(`p[data-i="${scrollToP}"]`); if (el) rs.scrollTop = el.offsetTop - 12; }
+  if (scrollToP) { const el = rs.querySelector(`p[data-i="${scrollToP}"]`); if (el) { if (R.spread) spreadScrollTo(el); else rs.scrollTop = el.offsetTop - 12; } }
   rs.addEventListener('scroll', onReaderScroll, { passive: true });
   if (EINK) bindPaging(rs);
   updateFoot();
 }
 function updateFoot() {
   const b = curBook(); const el = $('#rf'); if (!el || !b) return;
-  const pg = EINK ? ['<button class="btn pg" data-a="pg" data-id="-1" aria-label="Предыдущая страница">‹</button>', '<button class="btn pg" data-a="pg" data-id="1" aria-label="Следующая страница">›</button>'] : ['', ''];
+  const pg = EINK || R.spread ? ['<button class="btn pg" data-a="pg" data-id="-1" aria-label="Предыдущая страница">‹</button>', '<button class="btn pg" data-a="pg" data-id="1" aria-label="Следующая страница">›</button>'] : ['', ''];
   el.innerHTML = pg[0] + `<span>${R.c.chapters.length > 1 ? `Глава ${R.ch + 1} из ${R.c.chapters.length}` : esc(b.title)}</span><div class="bar" aria-hidden="true"><i style="width:${Math.round((b.pct || 0) * 100)}%"></i></div><span>${pctLabel(b)}</span>` + pg[1];
 }
 let scrollT;
@@ -590,6 +603,7 @@ function onReaderScroll() { act.last = now(); clearTimeout(scrollT); scrollT = s
 function trackPosition() {
   if (!R) return;
   const rs = $('#rs'); if (!rs) return;
+  if (R.spread) { const x = spreadTrack(); setPos(R.ch, x.p, x.atEnd); return; }
   const top = rs.getBoundingClientRect().top + 8;
   let p = 0;
   for (const el of rs.querySelectorAll('#rt p')) { if (el.getBoundingClientRect().bottom > top) { p = +el.dataset.i; break; } p = +el.dataset.i; }
@@ -607,7 +621,7 @@ function setPos(c, p, atEnd) {
   if ((b.maxG == null ? -1 : b.maxG) < g) {
     let n = 0, gi = 0; const passed = [];
     R.c.chapters.forEach((ch, ci) => ch.p.forEach(par => { if (gi > (b.maxG == null ? -1 : b.maxG) && gi <= g) { n += wordCount(par, b.lang); passed.push(par); } gi++; }));
-    b.maxG = g; b.read = (b.read || 0) + n; bump('words', n);
+    b.maxG = g; b.read = (b.read || 0) + n; bump('words', n); bump('w_' + b.lang, n);
     markPassed(passed, b.lang, b.title);
   }
   if (atEnd && !(b.done || []).includes(c)) { (b.done = b.done || []).push(c); bump('chd', 1); setTimeout(refreshChapterSummary, 0); }
@@ -624,6 +638,7 @@ function exitReader() {
 function pageTurn(d) {
   if (!R || sheetOpen) return false;
   const rs = $('#rs'); if (!rs) return false;
+  if (R.spread) return spreadTurn(d);
   const lh = parseFloat(getComputedStyle($('#rt')).lineHeight) || 30;
   const step = Math.max(80, rs.clientHeight - lh * 1.4);
   act.last = now();
@@ -653,7 +668,7 @@ function bindPaging(rs) {
 }
 function goChapter(c) {
   if (PL.on) playerStop();
-  R.ch = c; R.p = 0; R.prep = null; R.prevSum = null; R.chStart = null; setPos(c, 0, false); renderReader(0); $('#rs').scrollTop = 0;
+  R.ch = c; R.p = 0; R.prep = null; R.prevSum = null; R.chStart = null; setPos(c, 0, false); renderReader(0); $('#rs').scrollTop = 0; $('#rs').scrollLeft = 0;
 }
 function readerMenu() {
   const b = curBook(); const L = R.lang;
@@ -665,7 +680,10 @@ function readerMenu() {
       ${L === 'zh' ? `<div class="seg" role="group" aria-label="Пиньинь"><button data-a="pinyin" aria-pressed="${S.settings.pinyin}">Пиньинь над текстом</button></div>` : ''}
     </div>
     ${R.c.chapters.length > 1 ? `<h3 style="margin:6px 0 4px">Оглавление</h3><ol class="toc">${R.c.chapters.map((c, i) => `<li><button data-a="r-goto" data-id="${i}"${i === R.ch ? ' aria-current="true"' : ''}><span class="n">${i + 1}</span><span lang="${L}">${esc(c.t || 'Глава ' + (i + 1))}</span></button></li>`).join('')}</ol>` : ''}
-    <div class="row" style="margin:4px 0 14px">${canSpeak ? '<button class="btn sm" data-a="r-listen">' + I.speak + 'Слушать главу</button>' : ''}${getKey() ? '<button class="btn sm" data-a="r-chat">Поговорить о книге</button>' : ''}</div>
+    <div class="row" style="margin:4px 0 14px">${canSpeak ? '<button class="btn sm" data-a="r-listen">' + I.speak + 'Слушать главу</button>' : ''}<button class="btn sm" data-a="r-search">Поиск по книге</button>${getKey() ? '<button class="btn sm" data-a="r-chat">Поговорить о книге</button>' : ''}${L === 'zh' && canSpeak ? '<button class="btn sm" data-a="tones-start">Тоны на слух</button>' : ''}</div>
+    ${window.innerWidth >= 1000 && !EINK ? `<div class="row" style="margin:0 0 14px"><div class="seg" role="group" aria-label="Вид страницы"><button data-a="spread" aria-pressed="${!SPREAD}"${SPREAD ? '' : ' disabled'}>Лента</button><button data-a="spread" aria-pressed="${SPREAD}"${SPREAD ? ' disabled' : ''}>Разворот</button></div></div>` : ''}
+    <p class="hint" style="margin:0 0 6px">Чтобы перевести абзац целиком, удерживай на нём палец (или нажми правой кнопкой мыши).</p>
+    ${bookmarksHTML()}
     <div class="row" style="margin-top:18px"><button class="btn danger sm" data-a="book-del">Убрать книгу с полки</button></div>`, { label: 'Оглавление' });
 }
 function refreshHighlights() {
@@ -688,7 +706,9 @@ function tickActivity() {
 
 /* ---------------- word sheet ---------------- */
 function openWord(o) {
-  CUR = o;
+  CUR = o; delete SPEECH.word;
+  if (!freqReady(o.lang)) ensureFreq(o.lang).then(m => { if (m && CUR === o) updateSheet(wordHTML(o)); });
+  if (o.lang === 'zh' && !DATA.ced) ensureCedict().then(m => { if (m && CUR === o) updateSheet(wordHTML(o)); });
   if (R && R.tapped) R.tapped.add(keyOf(o.term, o.lang));
   const w = findWord(o.lang, o.term);
   if (w && w.tr) { o.data = { lemma: w.lemma, pos: w.pos, tr: w.tr, alt: w.alt, note: w.note, py: w.py, hsk: w.hsk, extra: w.extra }; o.state = 'ok'; o.fromSaved = true; if (!w.del && w.st === 'learn') addCtx(w, o); }
@@ -722,17 +742,20 @@ function wordHTML(o) {
   else if (o.state === 'nokey') body = `<p class="notice" style="margin-top:14px">Чтобы видеть перевод, добавь ключ Claude API в настройках. Ключ хранится только на этом устройстве.</p><div class="w-act"><button class="btn primary" data-a="goto-key">Открыть настройки</button></div>`;
   else if (o.state === 'err') body = `<p class="formmsg" role="alert" style="margin-top:14px">${esc(o.err)}</p><div class="w-act"><button class="btn" data-a="w-retry">Ещё раз</button></div>`;
   else {
-    const meta = [d.lemma && keyOf(d.lemma, L) !== keyOf(o.term, L) ? esc(d.lemma) + (L === 'zh' && d.py ? ' ' + esc(d.py) : '') : '', esc(d.pos), d.hsk ? 'HSK ' + esc(d.hsk) : ''].filter(Boolean).join(' · ');
+    const fi = freqInfo(L, o.term, d.lemma);
+    const meta = [d.lemma && keyOf(d.lemma, L) !== keyOf(o.term, L) ? esc(d.lemma) + (L === 'zh' && d.py ? ' ' + esc(d.py) : '') : '', esc(d.pos), d.hsk ? 'HSK ' + esc(d.hsk) : fi && fi.lv ? esc(fi.label) : ''].filter(Boolean).join(' · ');
     body = `${meta ? `<div class="w-meta" lang="${L}">${meta}</div>` : ''}
       <div class="w-tr">${esc(d.tr || '—')}</div>
       ${d.alt ? `<div class="w-alt">Ещё: ${esc(d.alt)}</div>` : ''}
+      ${fi && !fi.lv ? `<div class="w-freq${fi.rare ? ' rare' : ''}">${esc(fi.label)}</div>` : fi && fi.rare ? `<div class="w-freq rare">${esc(fi.label)}</div>` : ''}
       ${d.note ? `<div class="w-note">${esc(d.note)}</div>` : ''}
-      ${extraHTML(d)}${d.extra && d.extra.phrase && !saved ? '<button class="btn ghost sm" data-a="w-phrase" style="padding-left:0">Учить выражение целиком</button>' : ''}
+      ${extraHTML(d)}${L === 'zh' && DATA.ced && d.via !== 'CC-CEDICT (англ.)' ? cedictHTML(DATA.ced.has(d.lemma || '') ? d.lemma : o.term) : ''}${d.extra && d.extra.phrase && !saved ? '<button class="btn ghost sm" data-a="w-phrase" style="padding-left:0">Учить выражение целиком</button>' : ''}
       ${d.src === 'basic' ? `<p class="hint" style="margin:10px 0 0">Простой перевод через ${esc(d.via || 'переводчик')}, без учёта предложения.${o.aiErr ? ' Claude недоступен: ' + esc(o.aiErr) : getKey() ? '' : ' С ключом Claude будет перевод в контексте и пояснения.'}</p>${getKey() ? '<button class="btn ghost sm" data-a="w-retry" style="padding-left:0">Спросить Claude ещё раз</button>' : ''}` : ''}
       ${o.fromSaved ? `<button class="btn ghost sm" data-a="w-retr" style="margin-top:6px;padding-left:0">Перевести в этом предложении</button>` : ''}`;
   }
   const ctx = o.ctx ? `<div class="w-ctx${L === 'zh' ? ' zh' : ''}" lang="${L}">${highlight(o.ctx, o.term, L)}</div>
-    ${o.sentTr ? `<div class="w-ctxtr">${esc(o.sentTr)}</div>` : o.sentBusy ? '<div class="skeleton" style="width:70%"></div>' : o.sentErr ? `<div class="formmsg">${esc(o.sentErr)}</div>` : `<button class="btn ghost sm" data-a="w-sent" style="padding-left:0">Перевести предложение</button>`}${canSpeak ? `<button class="btn ghost sm" data-a="w-sent-speak">${I.speak}Послушать предложение</button>` : ''}` : '';
+    ${o.sentTr ? `<div class="w-ctxtr">${esc(o.sentTr)}</div>` : o.sentBusy ? '<div class="skeleton" style="width:70%"></div>' : o.sentErr ? `<div class="formmsg">${esc(o.sentErr)}</div>` : `<button class="btn ghost sm" data-a="w-sent" style="padding-left:0">Перевести предложение</button>`}${canSpeak ? `<button class="btn ghost sm" data-a="w-sent-speak">${I.speak}Послушать предложение</button>` : ''}${speechBlock(o.ctx, L, 'word')}` : '';
+  const tools = [o.pi != null && R ? '<button class="btn ghost sm" data-a="w-para">Абзац целиком</button>' : '', moreInBookBtn(o), L === 'zh' && hasHan(o.term) ? '<button class="btn ghost sm" data-a="w-strokes">Порядок черт</button>' : '', L === 'pl' && o.state === 'ok' && !/\s/.test((d.lemma || o.term).trim()) ? '<button class="btn ghost sm" data-a="w-table">Таблица форм</button>' : ''].filter(Boolean).join('');
   const acts = o.state === 'ok' ? `<div class="w-act">
       ${saved ? `<button class="btn" data-a="w-known">Уже знаю</button><button class="btn ghost danger" data-a="w-del">Убрать из слов</button>`
       : `<button class="btn primary" data-a="w-save">${known ? 'Снова учить' : 'Учить это слово'}</button>${known ? '' : '<button class="btn" data-a="w-knownnew">Знаю</button>'}`}
@@ -740,7 +763,7 @@ function wordHTML(o) {
   return `<div class="w-head"><div style="flex:1;min-width:0"><div class="w-term${L === 'zh' ? ' zh' : ''}" lang="${L}">${esc(o.term)}</div>${py ? `<div class="w-py">${pyHTML(o.term, py)}</div>` : ''}</div>
     ${canSpeak ? `<button class="iconbtn" data-a="w-speak" aria-label="Произнести">${I.speak}</button>` : ''}
     <button class="iconbtn" data-a="sheet-close" aria-label="Закрыть">${I.close}</button></div>
-    ${body}${ctx}${acts}`;
+    ${body}${ctx}${tools ? `<div class="w-tools">${tools}</div>` : ''}${acts}`;
 }
 function wordAction(a) {
   const o = CUR; if (!o) return;
@@ -772,20 +795,24 @@ function checkSelection() {
   if (!rt.contains(range.commonAncestorContainer)) return;
   const frag = range.cloneContents(); frag.querySelectorAll('rt').forEach(x => x.remove());
   const phrase = frag.textContent.replace(/\s+/g, ' ').trim();
-  if (!phrase || phrase.length > 240 || (R.lang !== 'zh' && !/\s/.test(phrase) && phrase.length < 2)) return;
+  if (!phrase || phrase.length > 600 || (R.lang !== 'zh' && !/\s/.test(phrase) && phrase.length < 2)) return;
   const r = range.getBoundingClientRect();
-  const b = document.createElement('button');
-  b.id = 'selchip'; b.className = 'btn primary sm selchip'; b.textContent = 'Перевести';
-  b.style.left = Math.min(window.innerWidth - 60, Math.max(60, r.left + r.width / 2)) + 'px'; b.style.top = Math.max(60, r.top) + 'px';
-  b.addEventListener('pointerdown', e => e.preventDefault());
-  b.addEventListener('click', () => {
-    const startEl = range.startContainer.nodeType === 1 ? range.startContainer : range.startContainer.parentElement;
-    const p = startEl.closest('p[data-i]'); const text = p ? R.c.chapters[R.ch].p[+p.dataset.i] : phrase;
+  const box = document.createElement('div');
+  box.id = 'selchip'; box.className = 'selchip';
+  box.innerHTML = '<button class="btn primary sm" type="button">Перевести</button><button class="btn sm" type="button">В цитаты</button>';
+  box.style.left = Math.min(window.innerWidth - 110, Math.max(110, r.left + r.width / 2)) + 'px'; box.style.top = Math.max(60, r.top) + 'px';
+  box.addEventListener('pointerdown', e => e.preventDefault());
+  const startEl = range.startContainer.nodeType === 1 ? range.startContainer : range.startContainer.parentElement;
+  const p = startEl.closest('p[data-i]'); const pi = p ? +p.dataset.i : R.p;
+  const [bTr, bQ] = box.querySelectorAll('button');
+  bTr.addEventListener('click', () => {
+    const text = p ? R.c.chapters[R.ch].p[pi] : phrase;
     const idx = text.indexOf(phrase.split(' ')[0]);
-    b.remove(); sel.removeAllRanges();
-    openWord({ term: phrase, lang: R.lang, ctx: sentenceAt(text, Math.max(0, idx), R.lang), book: R.id });
+    box.remove(); sel.removeAllRanges();
+    openWord({ term: phrase, lang: R.lang, ctx: sentenceAt(text, Math.max(0, idx), R.lang), book: R.id, pi });
   });
-  document.body.appendChild(b);
+  bQ.addEventListener('click', () => { const full = frag.textContent.replace(/[ \t]+/g, ' ').trim(); box.remove(); sel.removeAllRanges(); addQuote(full, pi); });
+  document.body.appendChild(box);
 }
 
 /* ---------------- words tab ---------------- */
@@ -797,7 +824,7 @@ function renderWords() {
     const q = reviewQueue(l); const learn = liveWords(l).filter(w => w.st === 'learn').length;
     return `<div class="deck" style="--c:var(--${l})"><div><span class="lang-dot" style="--c:var(--${l})"></span>${LANGS[l].ru}</div>
       <div class="big">${q.length}</div><div class="sub">${q.length ? plural(q.length, 'слово ждёт', 'слова ждут', 'слов ждут') + ' повторения' : 'на сегодня всё повторено'} · в изучении ${learn}</div>
-      <button class="btn ${q.length ? 'primary' : ''}" data-a="rv-start" data-id="${l}"${q.length ? '' : ' disabled'}>Повторить</button></div>`;
+      <div class="row"><button class="btn ${q.length ? 'primary' : ''}" data-a="rv-start" data-id="${l}"${q.length ? '' : ' disabled'}>Повторить</button>${l === 'zh' && canSpeak ? '<button class="btn sm" data-a="tones-start">Тоны на слух</button>' : ''}</div></div>`;
   }).join('');
   const qn = ui.q.trim().toLowerCase();
   const list = all.filter(w => (ui.wl === 'all' || w.lang === ui.wl) && (ui.ws === 'hard' ? w.st === 'learn' && w.leech : w.st === ui.ws) && (!qn || w.lemma.toLowerCase().includes(qn) || (w.tr || '').toLowerCase().includes(qn) || (w.forms || []).some(f => f.includes(qn))))
@@ -815,20 +842,23 @@ function renderWords() {
 }
 function wordDetail(id) {
   const w = S.words[id]; if (!w) return;
+  if (!freqReady(w.lang)) ensureFreq(w.lang).then(m => { if (m && sheetOpen && !CUR) wordDetail(id); });
   const L = w.lang;
   showSheet(`<div class="w-head"><div style="flex:1;min-width:0"><div class="w-term${L === 'zh' ? ' zh' : ''}" lang="${L}">${esc(w.lemma)}</div>${w.py ? `<div class="w-py">${esc(w.py)}</div>` : ''}</div>
       ${canSpeak ? `<button class="iconbtn" data-a="d-speak" data-id="${esc(id)}" aria-label="Произнести">${I.speak}</button>` : ''}<button class="iconbtn" data-a="sheet-close" aria-label="Закрыть">${I.close}</button></div>
     <div class="w-meta">${[esc(w.pos), w.hsk ? 'HSK ' + esc(w.hsk) : '', (w.forms || []).filter(f => f !== keyOf(w.lemma, L)).length ? 'формы: ' + esc(w.forms.filter(f => f !== keyOf(w.lemma, L)).join(', ')) : ''].filter(Boolean).join(' · ')}</div>
     <form data-form="edit-tr" data-id="${esc(id)}" style="margin-top:12px"><label class="f">Перевод<input class="in" name="tr" value="${esc(w.tr || '')}"></label></form>
     ${w.alt ? `<div class="w-alt">Ещё: ${esc(w.alt)}</div>` : ''}${w.note ? `<div class="w-note">${esc(w.note)}</div>` : ''}${extraHTML(w)}
+    ${(fi => fi ? `<div class="w-freq${fi.rare ? ' rare' : ''}">${esc(fi.label)}</div>` : '')(freqInfo(L, w.lemma, ...(w.forms || [])))}
+    ${L === 'zh' && hasHan(w.lemma) || L === 'pl' ? `<div class="w-tools">${L === 'zh' ? `<button class="btn ghost sm" data-a="d-strokes" data-id="${esc(id)}">Порядок черт</button>` : `<button class="btn ghost sm" data-a="d-table" data-id="${esc(id)}">Таблица форм</button>`}</div>` : ''}
     ${w.leech ? `<div class="leech"><b>Трудное слово</b> — забывалось ${w.srs.lapses} раз.${w.hint ? `<p>${esc(w.hint)}</p>` : ''}</div>` : ''}
     ${(w.ctxs || []).map(c => `<div class="w-ctx${L === 'zh' ? ' zh' : ''}" lang="${L}">${highlight(c.s, c.f, L)}</div>${c.tr ? `<div class="w-ctxtr">${esc(c.tr)}</div>` : ''}<div class="hint">${esc(c.b || '')}</div>`).join('')}
     <div class="w-act">${w.st === 'learn' ? `<button class="btn" data-a="d-known" data-id="${esc(id)}">Уже знаю</button>` : `<button class="btn" data-a="d-learn" data-id="${esc(id)}">Снова учить</button>`}<button class="btn ghost danger" data-a="d-del" data-id="${esc(id)}">Удалить</button></div>`, { label: w.lemma });
 }
 
 /* ---------------- review ---------------- */
-function startReview(lang) {
-  const q = reviewQueue(lang);
+function startReview(lang, limit) {
+  let q = reviewQueue(lang); if (limit) q = q.slice(0, limit);
   if (!q.length) { toast('На сегодня повторять нечего'); return; }
   RV = { lang, q, total: q.length, done: 0, show: false, again: {} };
   openLayer('review'); renderReview(); startActivity();
@@ -844,8 +874,8 @@ function renderReview() {
     foot = `<button class="btn primary wide" data-a="rv-close">К словам</button>`;
   } else {
     const fresh_ = !RV.type; body = reviewCardHTML(w);
-    if (fresh_ && RV.type === 'listen') setTimeout(() => { const c = pickCtx(w); speakAsync(c ? c.s : w.lemma, w.lang, S.settings.rate); }, 50);
-    const inputCard = (RV.type === 'cloze' || RV.type === 'produce') && w.lang !== 'zh';
+    if (fresh_ && (RV.type === 'listen' || RV.type === 'dictation')) setTimeout(() => { const c = pickCtx(w); speakAsync(c ? c.s : w.lemma, w.lang, S.settings.rate); }, 50);
+    const inputCard = ((RV.type === 'cloze' || RV.type === 'produce') && w.lang !== 'zh') || EXTRA_CARDS.includes(RV.type);
     if (!RV.show) foot = inputCard ? `<button class="btn ghost wide" data-a="rv-show">Не знаю — показать</button>` : `<button class="btn primary wide" data-a="rv-show">${RV.type === 'recog' ? 'Показать перевод' : 'Показать ответ'}</button>`;
     else {
       const labels = ['Не помню', 'С трудом', 'Помню', 'Легко']; const sg = suggestedGrade();
@@ -864,9 +894,9 @@ function gradeReview(g) {
   if (wasNew && !RV.again[id]) bump('nw', 1);
   bump('rev', 1);
   if (g === 0) { RV.again[id] = 1; RV.q.push(id); } else RV.done++;
-  RV.show = false; RV.type = null; RV.check = null; RV.answer = ''; save(4000); renderReview();
+  RV.show = false; RV.type = null; RV.check = null; RV.answer = ''; RV.opts = null; RV.order = null; RV.picked = null; RV.diff = ''; delete SPEECH.rv; save(4000); renderReview();
 }
-function exitReview() { RV = null; stopActivity(); $('#review-root').innerHTML = ''; save(300); render(); }
+function exitReview() { RV = null; stopActivity(); $('#review-root').innerHTML = ''; save(300); render(); if (R) { startActivity(); refreshHighlights(); const pd = $('#prep'); if (pd) { const op = pd.open; pd.outerHTML = prepHTML(); const n = $('#prep'); if (n) n.open = op; } } }
 
 /* ---------------- diary ---------------- */
 function streak() {
@@ -892,7 +922,7 @@ function renderDiary() {
     <div><h2>${frac >= 1 ? 'Цель на сегодня выполнена' : `Сегодня ${Math.round(t.min)} из ${goal} минут`}</h2>
     <p class="hint" style="margin:6px 0 0">Серия: ${streak()} ${plural(streak(), 'день', 'дня', 'дней')} подряд · сегодня прочитано ${fmtNum(t.words)} слов, повторено ${t.rev}, новых слов ${t.saved}</p></div>
   </section>
-  ${vocabHTML()}${weekHTML()}
+  ${vocabHTML()}${weekHTML()}${yearHTML()}
   <section class="sec"><div class="sec-h"><h2>Две недели</h2><span class="hint">за 7 дней ${Math.round(week)} мин</span></div>
     <div class="panel"><div class="days" role="img" aria-label="Минуты занятий по дням">${days.map(x => `<div class="d" title="${x.k}: ${Math.round(x.min)} мин"><div class="b${x.min < 0.5 ? ' z' : ''}" style="height:${Math.max(2, x.min / mx * 100)}%;${x.min > 0 && x.min < goal ? 'opacity:.45' : ''}"></div><span class="dl">${x.dd}</span></div>`).join('')}</div></div>
   </section>
@@ -900,7 +930,7 @@ function renderDiary() {
     ${langs.map(l => { const bs = books.filter(b => b.lang === l); const ws = liveWords(l); return `<tr><td><span class="lang-dot" style="--c:var(--${l})"></span>${LANGS[l].ru} <span class="hint">${esc(S.settings.levels[l])}</span></td><td class="n">${bs.length}</td><td class="n">${ws.filter(w => w.st === 'learn').length}</td><td class="n">${ws.filter(w => w.st === 'known').length}</td><td class="n">${Math.round(bs.reduce((s, b) => s + (b.mins || 0), 0))}</td></tr>`; }).join('')}
   </tbody></table></div></section>` : ''}
   ${books.length ? `<section class="sec"><h2 style="margin-bottom:12px">Книги</h2><div class="panel tablewrap"><table class="tl"><thead><tr><th>Книга</th><th class="n">Прочитано</th><th class="n">Минут</th></tr></thead><tbody>
-    ${books.map(b => `<tr><td lang="${b.lang}"><span class="lang-dot" style="--c:var(--${b.lang})"></span>${esc(b.title)}</td><td class="n">${pctLabel(b)}</td><td class="n">${Math.round(b.mins || 0)}</td></tr>`).join('')}
+    ${books.map(b => `<tr><td lang="${b.lang}"><span class="lang-dot" style="--c:var(--${b.lang})"></span>${esc(b.title)}${etaLabel(b) ? `<div class="hint">${etaLabel(b)}</div>` : ''}</td><td class="n">${pctLabel(b)}</td><td class="n">${Math.round(b.mins || 0)}</td></tr>`).join('')}
   </tbody></table></div></section>` : ''}`;
 }
 
@@ -1075,6 +1105,9 @@ function renderSettings() {
     <p class="hint" style="margin-top:0">Копия слов, прогресса и настроек одним файлом. Тексты книг в копию не входят.</p>
     <div class="row"><button class="btn" data-a="export">Скачать копию</button><button class="btn" data-a="import-backup">Загрузить копию</button><input type="file" id="backup" class="sr" accept="application/json,.json"></div>
     ${installPrompt ? '<div class="row" style="margin-top:12px"><button class="btn" data-a="install">Установить как приложение</button></div>' : ''}
+  </section>
+  <section class="panel"><h2 style="margin-bottom:8px">Словари и источники</h2>
+    <p class="hint" style="margin:0">Частотность слов — FrequencyWords (Hermit Dave, CC BY-SA 4.0). Списки HSK 3.0 — hsk3.1-syllabus (MIT). Китайский словарь — CC-CEDICT (MDBG, CC BY-SA 4.0). Порядок черт — Hanzi Writer (MIT) и hanzi-writer-data (Arphic PL). Таблицы форм — Викисловарь (CC BY-SA). Простой перевод — Google Переводчик и MyMemory.</p>
   </section></div>`;
 }
 function setSetting(k, v) {
@@ -1250,7 +1283,7 @@ document.addEventListener('click', e => {
       document.querySelectorAll('#rt w.on').forEach(x => x.classList.remove('on')); w.classList.add('on');
       const p = w.closest('p'); const text = R.c.chapters[R.ch].p[+p.dataset.i];
       const term = w.dataset.t || w.textContent;
-      openWord({ term, lang: R.lang, ctx: sentenceAt(text, +w.dataset.o, R.lang), book: R.id });
+      openWord({ term, lang: R.lang, ctx: sentenceAt(text, +w.dataset.o, R.lang), book: R.id, pi: +p.dataset.i });
     }
     return;
   }
@@ -1302,7 +1335,7 @@ document.addEventListener('click', e => {
     case 'rv-start': startReview(id); break;
     case 'rv-show': RV.show = true; renderReview(); break;
     case 'rv-grade': gradeReview(+id); break;
-    case 'rv-speak': { const w = RV && S.words[RV.q[0]]; if (w) { const c = pickCtx(w); speakAsync(RV.type === 'listen' && c ? c.s : w.lemma, w.lang, S.settings.rate); } break; }
+    case 'rv-speak': { const w = RV && S.words[RV.q[0]]; if (w) { const c = pickCtx(w); speakAsync((RV.type === 'listen' || RV.type === 'dictation') && c ? c.s : w.lemma, w.lang, S.settings.rate); } break; }
     case 'rv-close': closeLayer('review'); break;
     case 'set': setSetting(t.dataset.k, id); break;
     case 'key-test': testKey(); break;

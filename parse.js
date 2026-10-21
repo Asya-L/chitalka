@@ -40,6 +40,82 @@
   const firstLocal = (root, name) => byLocal(root, name)[0] || null;
   const kids = (el, name) => Array.from(el.children || []).filter(e => (e.localName || '').toLowerCase() === name);
 
+  // Текст абзаца с курсивом и жирным: {t, fmt:[[начало, конец, 'i'|'b'|'bi']]}. Пробелы схлопываются так же, как в clean().
+  const ITAL = /^(i|em|cite|emphasis|dfn|var)$/, BOLD = /^(b|strong)$/;
+  function rich(el) {
+    const segs = [];
+    const walk = (n, f) => {
+      for (const c of Array.from(n.childNodes)) {
+        if (c.nodeType === 3 || c.nodeType === 4) segs.push([c.nodeValue, f]);
+        else if (c.nodeType === 1) {
+          const tg = (c.localName || '').toLowerCase(); let g = f;
+          if (ITAL.test(tg) && !g.includes('i')) g += 'i';
+          if (BOLD.test(tg) && !g.includes('b')) g = 'b' + g;
+          walk(c, g);
+        }
+      }
+    };
+    walk(el, '');
+    let out = '', space = false; const fmt = [];
+    for (const [str, f] of segs) {
+      for (const ch of String(str || '').replace(/[­​﻿]/g, '')) {
+        if (/\s/.test(ch)) { space = true; continue; }
+        if (space && out) out += ' ';
+        space = false;
+        const st = out.length; out += ch;
+        if (f) { const last = fmt[fmt.length - 1]; if (last && last[2] === f && last[1] >= st - 1) last[1] = out.length; else fmt.push([st, out.length, f]); }
+      }
+    }
+    return { t: out, fmt: fmt.length ? fmt : null };
+  }
+  const imgOf = el => { const tg = (el.localName || '').toLowerCase(); if (tg === 'img') return el; if (tg === 'image') return el; return el.querySelector ? el.querySelector('img, image') : null; };
+  const imgSrc = el => el.getAttribute('src') || el.getAttribute('href') || el.getAttribute('xlink:href') || el.getAttributeNS('http://www.w3.org/1999/xlink', 'href') || el.getAttribute('l:href') || '';
+  // Глава из списка блоков {t, fmt} или {img}
+  function mkChapter(t, items) {
+    const ch = { t, p: [] };
+    items.forEach((it, i) => {
+      if (it.img) { ch.p.push(''); (ch.img = ch.img || {})[i] = it.img; }
+      else { ch.p.push(it.t); if (it.fmt) (ch.fmt = ch.fmt || {})[i] = it.fmt; }
+    });
+    return ch;
+  }
+  // Уменьшаем картинку до 900 px и сохраняем как JPEG прямо в книге
+  async function shrink(bytes, type) {
+    try {
+      if (typeof createImageBitmap !== 'function' || /svg/.test(type || '')) return null;
+      const bmp = await createImageBitmap(new Blob([bytes], { type: type || 'image/jpeg' }));
+      if (bmp.width < 60 || bmp.height < 60) return null;
+      const k = Math.min(1, 900 / Math.max(bmp.width, bmp.height));
+      const c = document.createElement('canvas'); c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+      const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(bmp, 0, 0, c.width, c.height);
+      return c.toDataURL('image/jpeg', 0.72);
+    } catch (e) { return null; }
+  }
+  const MAX_IMG = 60, MAX_IMG_BYTES = 6e6;
+  async function resolveImages(chapters, load) {
+    let n = 0, bytes = 0;
+    for (const ch of chapters) {
+      if (!ch.img) continue;
+      for (const i of Object.keys(ch.img)) {
+        let url = null;
+        if (n < MAX_IMG && bytes < MAX_IMG_BYTES) { const r = await load(ch.img[i]).catch(() => null); if (r) url = await shrink(r.bytes, r.type); }
+        if (url) { ch.img[i] = url; n++; bytes += url.length; } else delete ch.img[i];
+      }
+      if (!Object.keys(ch.img).length) delete ch.img;
+    }
+    // абзацы-пустышки от картинок, которые не удалось загрузить, убираем
+    for (const ch of chapters) {
+      if (!ch.p.some((p, i) => p === '' && !(ch.img && ch.img[i]))) continue;
+      const keep = ch.p.map((p, i) => p !== '' || (ch.img && ch.img[i]));
+      const remap = {}; let j = 0; keep.forEach((k, i) => { if (k) remap[i] = j++; });
+      const nf = {}, ni = {};
+      for (const i in (ch.fmt || {})) if (i in remap) nf[remap[i]] = ch.fmt[i];
+      for (const i in (ch.img || {})) if (i in remap) ni[remap[i]] = ch.img[i];
+      ch.p = ch.p.filter((p, i) => keep[i]);
+      if (ch.fmt) ch.fmt = nf; if (ch.img) ch.img = ni;
+    }
+  }
+
   function normLang(code) {
     const c = String(code || '').toLowerCase();
     if (/^zh|^cmn|^chi|^chinese/.test(c)) return 'zh';
@@ -72,8 +148,9 @@
     const walk = el => {
       const hasBlockChild = Array.from(el.children).some(c => BLOCK.has(c.tagName.toUpperCase()));
       if (!hasBlockChild) {
-        const t = clean(el.textContent);
-        if (t) out.push({ t, h: /^H[1-6]$/.test(el.tagName.toUpperCase()) });
+        const im = imgOf(el); if (im && imgSrc(im)) out.push({ img: imgSrc(im) });
+        const r = rich(el);
+        if (r.t) out.push({ t: r.t, fmt: r.fmt, h: /^H[1-6]$/.test(el.tagName.toUpperCase()) });
         return;
       }
       // смешанное содержимое: текст прямо внутри div рядом с блоками
@@ -81,6 +158,7 @@
       const pushLoose = () => { const t = clean(loose); if (t) out.push({ t, h: false }); loose = ''; };
       for (const n of Array.from(el.childNodes)) {
         if (n.nodeType === 1 && BLOCK.has(n.tagName.toUpperCase())) { pushLoose(); walk(n); }
+        else if (n.nodeType === 1 && imgOf(n) && !clean(n.textContent)) { pushLoose(); const im = imgOf(n); if (imgSrc(im)) out.push({ img: imgSrc(im) }); }
         else if (n.nodeType === 1 || n.nodeType === 3) loose += ' ' + n.textContent;
       }
       pushLoose();
@@ -139,17 +217,21 @@
       let doc = parseXml(src, 'application/xhtml+xml');
       if (!doc || !doc.body) doc = new DOMParser().parseFromString(src, 'text/html');
       doc.querySelectorAll('script,style,rt,rp,sup.noteref,a.noteref').forEach(e => e.remove());
-      const blocks = blocksFrom(doc.body);
-      const textLen = blocks.reduce((s, b) => s + b.t.length, 0);
+      let blocks = blocksFrom(doc.body);
+      const textLen = blocks.reduce((s, b) => s + (b.t || '').length, 0);
       if (textLen < 2) continue;
+      const dir = path.includes('/') ? path.replace(/[^/]+$/, '') : '';
+      blocks.forEach(b => { if (b.img) b.img = resolve(dir, decodeURIComponent(b.img.split('#')[0])); });
       let title = toc[path] || '';
       const firstH = blocks.find(b => b.h);
       if (!title && firstH) title = firstH.t;
-      let paras = blocks.map(b => b.t);
-      if (title && paras[0] === title) paras = paras.slice(1);
-      if (!paras.length) paras = [title];
-      chapters.push({ t: title.slice(0, 120), p: paras });
+      const fi = blocks.findIndex(b => !b.img);
+      if (title && fi >= 0 && blocks[fi].t === title) blocks.splice(fi, 1);
+      if (!blocks.some(b => b.t)) blocks.push({ t: title });
+      chapters.push(mkChapter(title.slice(0, 120), blocks));
     }
+    const types = {}; for (const m of Object.values(manifest)) types[resolve(base, decodeURIComponent(m.href))] = m.type;
+    await resolveImages(chapters, async p => { const b = await read(p); return b && b.length < 8e6 ? { bytes: b, type: types[p] || '' } : null; });
     return { title: meta('title'), author: meta('creator'), lang: normLang(meta('language')), chapters };
   }
 
@@ -158,25 +240,39 @@
     const out = [];
     for (const c of Array.from(el.children)) {
       const n = (c.localName || '').toLowerCase();
-      if (n === 'p' || n === 'subtitle' || n === 'v' || n === 'text-author') { const t = clean(c.textContent); if (t) out.push(t); }
+      if (n === 'p' || n === 'subtitle' || n === 'v' || n === 'text-author') { const r = rich(c); if (r.t) out.push(r); }
+      else if (n === 'image') { const h = imgSrc(c); if (h) out.push({ img: h.replace(/^#/, '') }); }
       else if (n === 'poem' || n === 'stanza' || n === 'cite' || n === 'epigraph') out.push(...fb2Paras(c));
     }
     return out;
   }
+  const textOf = items => items.map(x => x.t || '').join('');
   function fb2Sections(sec, out, depth) {
     const tEl = kids(sec, 'title')[0];
     const title = tEl ? clean(Array.from(tEl.children).map(x => x.textContent).join('. ') || tEl.textContent) : '';
     const sub = kids(sec, 'section');
     const own = fb2Paras(sec);
     if (sub.length) {
-      if (own.join('').length > 40) out.push({ t: title, p: own });
+      if (textOf(own).length > 40) out.push(mkChapter(title, own));
       sub.forEach((s, i) => {
         const before = out.length;
         fb2Sections(s, out, depth + 1);
         // заголовок части переносим к первой её главе
-        if (i === 0 && title && own.join('').length <= 40 && out[before]) out[before].t = out[before].t ? title + '. ' + out[before].t : title;
+        if (i === 0 && title && textOf(own).length <= 40 && out[before]) out[before].t = out[before].t ? title + '. ' + out[before].t : title;
       });
-    } else if (own.length) out.push({ t: title, p: own });
+    } else if (textOf(own)) out.push(mkChapter(title, own));
+  }
+  async function parseFb2(str) {
+    const book = parseFb2Text(str);
+    const bins = {}; for (const b of byLocal(book._doc, 'binary')) bins[b.getAttribute('id')] = b;
+    await resolveImages(book.chapters, async id => {
+      const b = bins[id]; if (!b) return null;
+      const s = (b.textContent || '').replace(/\s+/g, ''); if (s.length > 1e7) return null;
+      const bin = atob(s); const u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+      return { bytes: u8, type: b.getAttribute('content-type') || '' };
+    });
+    delete book._doc;
+    return book;
   }
   function parseFb2Text(str) {
     const doc = parseXml(str);
@@ -191,10 +287,10 @@
     const bodies = byLocal(doc, 'body').filter(b => !/notes|comments|footnotes/i.test(b.getAttribute('name') || ''));
     for (const body of bodies) {
       const secs = kids(body, 'section');
-      if (!secs.length) { const p = fb2Paras(body); if (p.length) chapters.push({ t: '', p }); }
+      if (!secs.length) { const p = fb2Paras(body); if (textOf(p)) chapters.push(mkChapter('', p)); }
       secs.forEach(s => fb2Sections(s, chapters, 0));
     }
-    return { title: bt ? clean(bt.textContent) : '', author, lang: normLang(lg && lg.textContent), chapters };
+    return { title: bt ? clean(bt.textContent) : '', author, lang: normLang(lg && lg.textContent), chapters, _doc: doc };
   }
 
   // ---------- TXT ----------
@@ -240,11 +336,11 @@
     else if (isZip) {
       const zip = await JSZip.loadAsync(buf);
       const f = Object.values(zip.files).find(x => /\.fb2$/i.test(x.name));
-      if (f) book = parseFb2Text(decodeXml(await f.async('uint8array')));
+      if (f) book = await parseFb2(decodeXml(await f.async('uint8array')));
       else if (zip.file('META-INF/container.xml')) book = await parseEpub(buf);
       else throw new Error('В архиве нет книги FB2 или EPUB.');
     }
-    else if (/\.fb2$/i.test(name) || /<FictionBook/i.test(new TextDecoder('latin1').decode(buf.subarray(0, 600)))) book = parseFb2Text(decodeXml(buf));
+    else if (/\.fb2$/i.test(name) || /<FictionBook/i.test(new TextDecoder('latin1').decode(buf.subarray(0, 600)))) book = await parseFb2(decodeXml(buf));
     else book = parseTxt(decodeText(buf), name);
     book.chapters = book.chapters.filter(c => c.p.length);
     if (!book.chapters.length) throw new Error('В файле не нашлось текста.');
