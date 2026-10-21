@@ -220,7 +220,8 @@ async def login(p, email, pw):
     await p.wait_for_selector('nav.tabs')
 
 async def set_key(p):
-    await p.evaluate("localStorage.setItem('mezhdu-claude-key','sk-ant-test')")
+    # Claude в приложении выключен; для проверки кода на Claude включаем его флагом разработки
+    await p.evaluate("localStorage.setItem('mezhdu-ai','1');localStorage.setItem('mezhdu-claude-key','sk-ant-test')")
 
 async def import_book(p, fname, lang=None):
     await p.set_input_files('#file', os.path.join(T, fname))
@@ -359,6 +360,7 @@ async def c05_errors_and_settings(c):
     await p.locator('#rt w').first.click(); await p.wait_for_selector('.w-tr')
     assert 'гугл:' in await p.inner_text('.w-tr')     # без ключа — простой перевод
     await p.go_back(); await p.wait_for_selector('.sheet', state='detached'); await p.go_back(); await p.wait_for_selector('.reader', state='detached')
+    await p.evaluate("localStorage.setItem('mezhdu-ai','1')")
     await p.click('[data-a="tab"][data-id="settings"]'); await p.wait_for_selector('input[name="key"]')
     c.claude.fail = 401
     await p.fill('input[name=key]', 'sk-bad'); await p.click('form[data-form="key"] button[type=submit]')

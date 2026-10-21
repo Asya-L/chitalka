@@ -151,7 +151,7 @@ Reply with JSON only: {"words":[{"w":"word exactly as it appears in the text","t
       if (p.items.length) idb.put('tr', ck, p).catch(() => { });
     }
     if (R !== r0) return;
-    R.prep = p.needKnown ? { items: [], info: 'Ключевые слова появятся, когда приложение узнает твой словарь: дочитай пару глав или добавь ключ Claude.' } : p;
+    R.prep = p.needKnown ? { items: [], info: 'Ключевые слова появятся, когда приложение узнает твой словарь: дочитай пару глав.' } : p;
   } catch (e) { if (R === r0) R.prep = { items: [], err: e.message || 'Не получилось подобрать слова.' }; }
   paintPrep();
 }
@@ -209,7 +209,7 @@ function chapterSummaryInner() {
       ${met ? `<li><b>${met}</b><span>незнакомых встретилось</span></li><li><b>${newKnown}</b><span>теперь знакомы</span></li>` : ''}
       <li><b>${savedHere}</b><span>сохранено в повторение</span></li>
     </ul>
-    <div class="row">${getKey() ? `<button class="btn primary sm" data-a="ex-questions">Вопросы по главе</button><button class="btn sm" data-a="ex-retell">Пересказать главу</button>` : '<p class="hint" style="margin:0">С ключом Claude здесь появятся вопросы на понимание и пересказ с проверкой.</p>'}</div>`;
+    <div class="row">${getKey() ? `<button class="btn primary sm" data-a="ex-questions">Вопросы по главе</button><button class="btn sm" data-a="ex-retell">Пересказать главу</button>` : ''}<button class="btn sm${getKey() ? '' : ' primary'}" data-a="dr-chapter">Пропуски в абзацах этой главы</button></div>`;
 }
 function snapshotChapter() {
   if (!R) return;
@@ -564,6 +564,7 @@ function exMistakes(L) {
   });
 }
 function mistakesHTML() {
+  if (!aiOn()) return '';
   const all = Object.values(S.mistakes).filter(m => !m.del);
   const langs = Object.keys(LANGS).filter(l => liveWords(l).length || all.some(m => m.lang === l) || liveBooks().some(b => b.lang === l));
   if (!langs.length) return '';
@@ -639,6 +640,7 @@ Current chapter excerpt:\n${ch.p.join('\n').slice(0, 5000)}`;
 const NEXT_LEVEL = { A1: 'A2', A2: 'B1', B1: 'B2', B2: 'C1', C1: 'C2', C2: 'C2', HSK1: 'HSK2', HSK2: 'HSK3', HSK3: 'HSK4', HSK4: 'HSK5', HSK5: 'HSK6', HSK6: 'HSK6' };
 const GR_BUSY = {};
 function grammarHTML() {
+  if (!aiOn()) return '';
   const langs = Object.keys(LANGS).filter(l => liveWords(l).length >= 5 || S.grammar[l]);
   if (!langs.length) return '';
   return `<section class="sec" id="grammar"><h2 style="margin-bottom:6px">Грамматика из твоих книг</h2>

@@ -546,7 +546,7 @@ document.addEventListener('submit', e => {
   if (k === 'goal') { e.preventDefault(); goalSave(f); }
 });
 document.addEventListener('keydown', e => {
-  if (!R || !R.spread || sheetOpen || /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
+  if (!R || !R.spread || D || sheetOpen || /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
   if (['ArrowRight', 'PageDown', ' '].includes(e.key)) { e.preventDefault(); e.stopImmediatePropagation(); spreadTurn(1); }
   if (['ArrowLeft', 'PageUp'].includes(e.key)) { e.preventDefault(); e.stopImmediatePropagation(); spreadTurn(-1); }
 }, true);

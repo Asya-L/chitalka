@@ -32,6 +32,7 @@ const I = {
   close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
   speak: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5L6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/></svg>',
   book: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5.5c3-1 6-.8 10 1.5 4-2.3 7-2.5 10-1.5V19c-3-1-6-.8-10 1.5C8 18.2 5 18 2 19z"/><path d="M12 7v13.5"/></svg>',
+  ex: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/></svg>',
   plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
   logo: '<svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--accent)"/><path d="M6 9.5c3.2-1 6.4-.8 10 1.3 3.6-2.1 6.8-2.3 10-1.3V23c-3.2-1-6.4-.8-10 1.3C12.4 22.2 9.2 22 6 23z" fill="var(--paper)"/><path d="M16 10.8v13.5" stroke="var(--accent)" stroke-width="1.2"/><path d="M8.5 15.2h5" stroke="var(--mark)" stroke-width="2.6" stroke-linecap="round"/><path d="M18.5 13.6h5M18.5 17h4" stroke="var(--accent)" stroke-width="1" stroke-linecap="round" opacity=".55"/></svg>'
 };
@@ -58,7 +59,9 @@ const idb = (() => {
   };
 })();
 const DEV = (() => { let d = null; try { d = localStorage.getItem('mezhdu-dev'); if (!d) { d = Math.random().toString(36).slice(2, 10); localStorage.setItem('mezhdu-dev', d); } } catch (e) { d = 'x' + Math.random().toString(36).slice(2, 8); } return d; })();
-const getKey = () => { try { return localStorage.getItem(KEY_LS) || ''; } catch (e) { return ''; } };
+// Claude пока выключен: ключ не вводится и не используется. Код оставлен; включить можно флагом mezhdu-ai=1 (только для разработки и тестов).
+const aiOn = () => { try { return localStorage.getItem('mezhdu-ai') === '1'; } catch (e) { return false; } };
+const getKey = () => { if (!aiOn()) return ''; try { return localStorage.getItem(KEY_LS) || ''; } catch (e) { return ''; } };
 
 function fresh() {
   return { v: 1, settings: { u: 0, target: 'ru', model: MODELS[0].id, font: 19, lh: 1.65, theme: 'auto', pinyin: true, goal: 20, newPerDay: 15, levels: { en: 'B1', pl: 'B1', zh: 'HSK1' }, schedule: [], tz: '', tones: true, cards: 'all', rate: 0.9, weekly: true }, books: {}, words: {}, log: {}, known: {}, mistakes: {}, grammar: {}, quotes: {}, goals: {} };
@@ -117,7 +120,7 @@ function bump(field, n) {
 }
 function langMinutes(d, lang) { let m = 0; for (const e of Object.values(S.log[d] || {})) m += e['m_' + lang] || 0; return m; }
 function dayTotals(d) {
-  const t = { min: 0, saved: 0, rev: 0, words: 0, nw: 0 };
+  const t = { min: 0, saved: 0, rev: 0, words: 0, nw: 0, ex: 0, drill: 0 };
   for (const e of Object.values(S.log[d] || {})) for (const k in t) t[k] += e[k] || 0;
   return t;
 }
@@ -395,6 +398,7 @@ function doClose(name) {
   if (name === 'sheet') hideSheet();
   if (name === 'reader') exitReader();
   if (name === 'review') exitReview();
+  if (name === 'drill') exitDrill();
 }
 
 let toastT;
@@ -414,7 +418,7 @@ function applyTheme() {
 if (darkMQ && darkMQ.addEventListener) darkMQ.addEventListener('change', applyTheme);
 
 /* ---------------- render: shell ---------------- */
-const TABS = [['shelf', 'Полка'], ['words', 'Слова'], ['diary', 'Дневник'], ['settings', 'Настройки']];
+const TABS = [['shelf', 'Полка'], ['words', 'Слова'], ['ex', 'Практика'], ['diary', 'Дневник'], ['settings', 'Настройки']];
 function render() {
   const app = $('#app');
   if (gated()) { app.innerHTML = renderGate(); setStatus(); return; }
@@ -423,7 +427,7 @@ function render() {
     <div class="brand">${I.logo}<span>Между строк</span></div>
     <span id="status" class="status"></span>
     <nav class="tabs" aria-label="Разделы">${TABS.map(([id, n]) => `<button class="tab" data-a="tab" data-id="${id}"${ui.tab === id ? ' aria-current="page"' : ''}>${I[id === 'settings' ? 'set' : id]}<span>${n}${id === 'words' && due ? ` <span class="sr">, к повторению</span>(${due})` : ''}</span></button>`).join('')}</nav>
-  </div></header><main id="main">${ui.tab === 'shelf' ? renderShelf() : ui.tab === 'words' ? renderWords() : ui.tab === 'diary' ? renderDiary() : renderSettings()}</main>`;
+  </div></header><main id="main">${ui.tab === 'shelf' ? renderShelf() : ui.tab === 'words' ? renderWords() : ui.tab === 'ex' ? renderExercises() : ui.tab === 'diary' ? renderDiary() : renderSettings()}</main>`;
   setStatus();
 }
 
@@ -444,7 +448,6 @@ function renderShelf() {
       <p>Добавь книгу на английском, польском или китайском. Нажимаешь на незнакомое слово — видишь перевод именно в этом предложении и сохраняешь его. Потом слова повторяются карточками с тем же предложением из книги.</p>
       <p class="hint">Подходят файлы EPUB, FB2, TXT и PDF.</p>
       <div class="row" style="justify-content:center;margin-top:18px"><button class="btn primary" data-a="add">${I.plus}Добавить книгу</button></div>
-      ${!getKey() ? `<p class="hint" style="margin-top:22px">Перевод работает сразу. С ключом Claude API он будет точнее — с учётом предложения и с пояснениями. Ключ вписывается в <a href="#" data-a="tab" data-id="settings">настройках</a>.</p>` : ''}
     </div>`;
   const cur = books.find(b => b.last) || books[0];
   const langs = [...new Set(books.map(b => b.lang))];
@@ -699,7 +702,7 @@ function stopActivity() { clearInterval(act.iv); act.iv = null; }
 function tickActivity() {
   if (document.visibilityState !== 'visible' || now() - act.last > 120000) return;
   bump('min', 0.25);
-  const lang = R ? R.lang : RV ? RV.lang : null; if (lang) bump('m_' + lang, 0.25);
+  const lang = D ? D.lang : R ? R.lang : RV ? RV.lang : null; if (lang) bump('m_' + lang, 0.25);
   if (R) { const b = curBook(); if (b) { b.mins = Math.round(((b.mins || 0) + 0.25) * 100) / 100; b.u = now(); } }
   save(20000);
 }
@@ -751,7 +754,7 @@ function wordHTML(o) {
       ${fi && !fi.lv ? `<div class="w-freq${fi.rare ? ' rare' : ''}">${esc(fi.label)}</div>` : fi && fi.rare ? `<div class="w-freq rare">${esc(fi.label)}</div>` : ''}
       ${d.note ? `<div class="w-note">${esc(d.note)}</div>` : ''}
       ${extraHTML(d)}${L === 'zh' && DATA.ced && d.via !== 'CC-CEDICT (англ.)' ? cedictHTML(DATA.ced.has(d.lemma || '') ? d.lemma : o.term) : ''}${d.extra && d.extra.phrase && !saved ? '<button class="btn ghost sm" data-a="w-phrase" style="padding-left:0">Учить выражение целиком</button>' : ''}
-      ${d.src === 'basic' ? `<p class="hint" style="margin:10px 0 0">Простой перевод через ${esc(d.via || 'переводчик')}, без учёта предложения.${o.aiErr ? ' Claude недоступен: ' + esc(o.aiErr) : getKey() ? '' : ' С ключом Claude будет перевод в контексте и пояснения.'}</p>${getKey() ? '<button class="btn ghost sm" data-a="w-retry" style="padding-left:0">Спросить Claude ещё раз</button>' : ''}` : ''}
+      ${d.src === 'basic' ? `<p class="hint" style="margin:10px 0 0">Простой перевод через ${esc(d.via || 'переводчик')}, без учёта предложения.${o.aiErr ? ' Claude недоступен: ' + esc(o.aiErr) : ''}</p>${getKey() ? '<button class="btn ghost sm" data-a="w-retry" style="padding-left:0">Спросить Claude ещё раз</button>' : ''}` : ''}
       ${o.fromSaved ? `<button class="btn ghost sm" data-a="w-retr" style="margin-top:6px;padding-left:0">Перевести в этом предложении</button>` : ''}`;
   }
   const ctx = o.ctx ? `<div class="w-ctx${L === 'zh' ? ' zh' : ''}" lang="${L}">${highlight(o.ctx, o.term, L)}</div>
@@ -825,7 +828,7 @@ function renderWords() {
     const q = reviewQueue(l); const learn = liveWords(l).filter(w => w.st === 'learn').length;
     return `<div class="deck" style="--c:var(--${l})"><div><span class="lang-dot" style="--c:var(--${l})"></span>${LANGS[l].ru}</div>
       <div class="big">${q.length}</div><div class="sub">${q.length ? plural(q.length, 'слово ждёт', 'слова ждут', 'слов ждут') + ' повторения' : 'на сегодня всё повторено'} · в изучении ${learn}</div>
-      <div class="row"><button class="btn ${q.length ? 'primary' : ''}" data-a="rv-start" data-id="${l}"${q.length ? '' : ' disabled'}>Повторить</button>${l === 'zh' && canSpeak ? '<button class="btn sm" data-a="tones-start">Тоны на слух</button>' : ''}</div></div>`;
+      <div class="row"><button class="btn ${q.length ? 'primary' : ''}" data-a="rv-start" data-id="${l}"${q.length ? '' : ' disabled'}>Повторить</button><button class="btn sm" data-a="tab" data-id="ex">Упражнения</button></div></div>`;
   }).join('');
   const qn = ui.q.trim().toLowerCase();
   const list = all.filter(w => (ui.wl === 'all' || w.lang === ui.wl) && (ui.ws === 'hard' ? w.st === 'learn' && w.leech : w.st === ui.ws) && (!qn || w.lemma.toLowerCase().includes(qn) || (w.tr || '').toLowerCase().includes(qn) || (w.forms || []).some(f => f.includes(qn))))
@@ -921,7 +924,7 @@ function renderDiary() {
   <section class="sec panel goal">
     <svg viewBox="0 0 100 100" role="img" aria-label="Сегодня ${Math.round(t.min)} из ${goal} минут"><circle cx="50" cy="50" r="40" fill="none" stroke="var(--line)" stroke-width="9"/><circle cx="50" cy="50" r="40" fill="none" stroke="var(--accent)" stroke-width="9" stroke-linecap="round" stroke-dasharray="${(C * frac).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 50 50)"/><text x="50" y="56" text-anchor="middle" font-size="22" font-weight="600" fill="var(--ink)" font-family="Playfair Display,Literata,serif">${Math.round(t.min)}</text></svg>
     <div><h2>${frac >= 1 ? 'Цель на сегодня выполнена' : `Сегодня ${Math.round(t.min)} из ${goal} минут`}</h2>
-    <p class="hint" style="margin:6px 0 0">Серия: ${streak()} ${plural(streak(), 'день', 'дня', 'дней')} подряд · сегодня прочитано ${fmtNum(t.words)} слов, повторено ${t.rev}, новых слов ${t.saved}</p></div>
+    <p class="hint" style="margin:6px 0 0">Серия: ${streak()} ${plural(streak(), 'день', 'дня', 'дней')} подряд · сегодня прочитано ${fmtNum(t.words)} слов, повторено ${t.rev}, новых слов ${t.saved}${t.ex ? `, упражнений ${t.ex}` : ''}${t.drill ? ' · тренировка дня ✓' : ''}</p></div>
   </section>
   ${vocabHTML()}${weekHTML()}${yearHTML()}
   <section class="sec"><div class="sec-h"><h2>Две недели</h2><span class="hint">за 7 дней ${Math.round(week)} мин</span></div>
@@ -1080,12 +1083,13 @@ function renderSettings() {
   return `<h1>Настройки</h1><div class="set sec">
   <section class="panel"><h2 style="margin-bottom:12px">Перевод</h2>
     <div class="f">Объяснять на языке<div style="margin-top:5px">${seg('target', Object.entries(TARGETS).map(([k, v]) => [k, v.name]), st.target, 'Язык объяснений')}</div></div>
-    <form data-form="key"><label class="f">Ключ Claude API<input class="in" name="key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-…" value="${esc(key)}"></label>
+    ${aiOn() ? `    <form data-form="key"><label class="f">Ключ Claude API<input class="in" name="key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-…" value="${esc(key)}"></label>
       <div class="row"><button class="btn primary" type="submit">Сохранить ключ</button>${key ? '<button class="btn" type="button" data-a="key-test">Проверить</button><button class="btn ghost danger" type="button" data-a="key-del">Удалить ключ</button>' : ''}</div>
       ${keyMsg ? `<p class="${/не|ошиб/i.test(keyMsg) ? 'formmsg' : 'notice'}" role="status" style="margin-top:10px">${esc(keyMsg)}</p>` : ''}
       <p class="hint" style="margin-top:10px">Ключ хранится только в этом браузере и не синхронизируется — на телефоне его нужно вписать отдельно. Создать ключ: console.anthropic.com → API Keys. Без ключа или если Claude не отвечает, слова переводятся через Google Переводчик или MyMemory — проще и без учёта предложения.</p></form>
     <label class="f" style="margin-top:6px">Модель<select class="in" data-a="set-model">${MODELS.map(m => `<option value="${m.id}"${st.model === m.id ? ' selected' : ''}>${m.name}</option>`).join('')}</select></label>
-    <div class="f">Мой уровень — от него зависят пояснения<div class="row" style="margin-top:6px">${Object.keys(LANGS).map(l => `<label style="display:flex;align-items:center;gap:8px;color:var(--ink)">${LANGS[l].ru}<select class="in" style="width:auto;min-height:38px;padding:6px 10px" data-a="set-level" data-id="${l}">${LANGS[l].levels.map(v => `<option${st.levels[l] === v ? ' selected' : ''}>${v}</option>`).join('')}</select></label>`).join('')}</div></div>
+` : ''}
+    <div class="f">Мой уровень — от него зависит, какие частые слова считаются знакомыми<div class="row" style="margin-top:6px">${Object.keys(LANGS).map(l => `<label style="display:flex;align-items:center;gap:8px;color:var(--ink)">${LANGS[l].ru}<select class="in" style="width:auto;min-height:38px;padding:6px 10px" data-a="set-level" data-id="${l}">${LANGS[l].levels.map(v => `<option${st.levels[l] === v ? ' selected' : ''}>${v}</option>`).join('')}</select></label>`).join('')}</div></div>
   </section>
   <section class="panel"><h2 style="margin-bottom:12px">Чтение</h2>
     <div class="f">Экран электронной книги (E-ink)<div style="margin-top:5px" class="seg" role="group" aria-label="E-ink"><button data-a="eink" aria-pressed="${EINK}">${EINK ? 'Включён' : 'Выключен'}</button></div>
@@ -1393,12 +1397,12 @@ document.addEventListener('submit', e => {
   if (['signin', 'signup', 'forgot', 'newpass'].includes(k)) authSubmit(k);
 });
 document.addEventListener('keydown', e => {
-  if (R && EINK && !sheetOpen && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) {
+  if (R && EINK && !D && !sheetOpen && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) {
     if (['ArrowRight', 'ArrowDown', 'PageDown', ' '].includes(e.key)) { e.preventDefault(); pageTurn(1); return; }
     if (['ArrowLeft', 'ArrowUp', 'PageUp'].includes(e.key)) { e.preventDefault(); pageTurn(-1); return; }
   }
-  if (e.key === 'Escape') { if (sheetOpen) closeLayer('sheet'); else if (RV) closeLayer('review'); else if (R) closeLayer('reader'); return; }
-  if (RV && !sheetOpen && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) {
+  if (e.key === 'Escape') { if (sheetOpen) closeLayer('sheet'); else if (D) closeLayer('drill'); else if (RV) closeLayer('review'); else if (R) closeLayer('reader'); return; }
+  if (RV && !D && !sheetOpen && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) {
     if (!RV.show && (e.key === ' ' || e.key === 'Enter') && RV.q.length) { e.preventDefault(); RV.show = true; renderReview(); }
     else if (RV.show && /^[1-4]$/.test(e.key)) gradeReview(+e.key - 1);
   }

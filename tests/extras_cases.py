@@ -404,5 +404,187 @@ async def p01_pdf(c):
     assert await p.evaluate('Object.keys(S.books).length') == 1
     await c.check()
 
-EXTRAS_CASES = [p01_pdf, g01_auth_first, x01_freq_levels, x02_cedict, x03_more_in_book, x04_paragraph, x05_quotes_bookmarks, x06_rich_text, x07_search_spread,
+
+SEED_PL = """(()=>{const L='pl';const W=[['las','лес','Wiedźmin szedł powoli przez las.'],['mgła','туман','Nie widzę nic przez mgłę.','mgłę'],['ścieżka','тропа','Mgła unosiła się nad ścieżką.','ścieżką'],['powoli','медленно','Wiedźmin szedł powoli przez las.'],['wiedzieć','знать','Nie wiedział jeszcze, że ktoś czeka.','wiedział'],['czekać','ждать','Ktoś na niego czeka przy zegarze.','czeka'],['noc','ночь','To była długa noc.']];
+ W.forEach(([lem,tr,sent,f],i)=>{const id=L+':'+lem;S.words[id]={id,lang:L,lemma:lem,tr,forms:[(f||lem).toLowerCase(),lem],ctxs:[{s:sent,f:f||lem,tr:'',b:'Droga przez mgłę'}],created:now()-i,st:'learn',u:now(),srs:{due:now()+5*DAY,reps:3,lapses:0,s:5,d:5,last:now()-DAY,ivl:5}}});save();render()})()"""
+
+async def solve_item(p):
+    """Решает текущее задание упражнения правильно (по данным D), затем жмёт «Дальше»."""
+    k = await p.evaluate("D.items[D.i].k")
+    if k == 'choice':
+        a = await p.evaluate("D.items[D.i].a"); await p.click(f'[data-a="dr-pick"][data-id="{a}"]')
+    elif k == 'build':
+        for i in await p.evaluate("D.items[D.i].target"): await p.click(f'.ord-pool [data-a="dr-build"][data-id="{i}"]')
+        await p.click('[data-a="dr-check"]')
+    elif k == 'gaps':
+        bank = await p.evaluate("(()=>{const it=D.items[D.i];const used=new Set();return it.answers.map(a=>{const i=it.bank.findIndex((b,j)=>!used.has(j)&&keyOf(b,D.lang)===keyOf(a,D.lang));used.add(i);return i})})()")
+        for i in bank: await p.click(f'.ord-pool [data-a="dr-bank"][data-id="{i}"]')
+        await p.click('[data-a="dr-check"]')
+    elif k == 'input':
+        n = await p.evaluate("D.items[D.i].fields.length")
+        for i in range(n): await p.fill(f'input[name="a{i}"]', await p.evaluate(f"D.items[D.i].fields[{i}].ans[0]"))
+        await p.click('form[data-form="dr-input"] button[type=submit]')
+    elif k == 'dict':
+        await p.fill('#dr-dict', await p.evaluate("D.items[D.i].text")); await p.press('#dr-dict', 'Enter')
+    elif k == 'find':
+        o = await p.evaluate("(()=>{const it=D.items[D.i];return [...document.querySelectorAll('[data-a=\"dr-tap\"]')].find(w=>it.keys.has(w.dataset.k)).dataset.id})()")
+        await p.click(f'[data-a="dr-tap"][data-id="{o}"]')
+    elif k == 'pairs':
+        for i in range(5):
+            await p.click(f'[data-a="dr-pl"][data-id="{i}"]'); await p.click(f'[data-a="dr-pr"][data-id="{i}"]')
+    await p.wait_for_selector('[data-a="dr-next"]'); await p.click('[data-a="dr-next"]')
+
+async def run_drill(p, id, expect_all=True):
+    await p.click(f'[data-a="dr-start"][data-id="{id}"]'); await p.wait_for_function("D && !D.busy")
+    err = await p.evaluate("D.err||''"); assert not err, (id, err)
+    n = await p.evaluate("D.items.length")
+    for _ in range(n): await solve_item(p)
+    await p.wait_for_selector('.drill-score'); sc = await p.inner_text('.drill-score')
+    if expect_all: a, b = re.findall(r'\d+', sc); assert a == b and int(a) > 0, (id, sc)
+    return sc
+
+async def e01_hub_no_claude(c):
+    """Claude убран: нет ключа и упоминаний; раздел «Упражнения»: пусто без книг, условия у недоступных упражнений."""
+    c.data = True; p = await c.open()
+    await p.click('[data-a="tab"][data-id="settings"]'); assert await p.locator('input[name="key"]').count() == 0
+    await p.click('[data-a="tab"][data-id="ex"]'); await p.wait_for_selector('text=Упражнения строятся на твоих книгах')
+    await p.click('[data-a="tab"][data-id="shelf"]'); await xopen(p, 'sample.fb2'); await p.go_back(); await p.wait_for_selector('.reader', state='detached')
+    await p.click('[data-a="tab"][data-id="ex"]'); await p.wait_for_selector('.ex-grid')
+    t = await p.inner_text('.ex-grid')
+    for x in ['Пары', 'Пропуски в абзаце', 'Найди в тексте', 'На слух', 'Спринт', 'Собери предложение', 'Диктант', 'Падежи', 'Предлоги и падежи']: assert x in t, x
+    assert 'Неправильные глаголы' not in t and 'Пиньинь' not in t
+    assert await p.get_attribute('[data-a="dr-start"][data-id="pairs"]', 'aria-disabled') == 'true'
+    await p.click('[data-a="dr-start"][data-id="pairs"]', force=True); await p.wait_for_selector('text=Нужно хотя бы 5 слов')
+    await c.shot('e01-hub')
+    for tab in ['shelf', 'words', 'ex', 'diary', 'settings']:
+        await p.click(f'[data-a="tab"][data-id="{tab}"]'); assert 'Claude' not in await p.inner_text('main'), tab
+    await c.check()
+
+async def e02_pairs_sprint(c):
+    """Пары с ошибкой (слово уходит в повторение), спринт на время."""
+    c.data = True; p = await c.open()
+    await import_book(p, 'sample.fb2'); await p.evaluate(SEED_PL)
+    await p.click('[data-a="tab"][data-id="ex"]'); await p.click('[data-a="dr-start"][data-id="pairs"]'); await p.wait_for_selector('.pairs')
+    await c.shot('e02-pairs')
+    await p.click('[data-a="dr-pl"][data-id="0"]'); await p.click('[data-a="dr-pr"][data-id="1"]'); await p.wait_for_selector('.pair.bad')
+    wid = await p.evaluate("D.items[0].words[0].id")
+    for i in range(5): await p.click(f'[data-a="dr-pl"][data-id="{i}"]'); await p.click(f'[data-a="dr-pr"][data-id="{i}"]')
+    await p.click('[data-a="dr-next"]'); sc = await p.inner_text('.drill-score'); assert sc == '4 из 5', sc
+    assert await p.evaluate(f"S.words['{wid}'].srs.due <= now()"), 'ошибка — слово к повторению'
+    await c.shot('e02-summary')
+    await p.click('[data-a="dr-close"]'); await p.wait_for_selector('.drill', state='detached')
+    await p.click('[data-a="dr-start"][data-id="sprint"]'); await p.wait_for_selector('[data-a="dr-sp"]')
+    for _ in range(6):
+        truth = await p.evaluate("D.sp.cur.truth"); await p.click(f'[data-a="dr-sp"][data-id="{1 if truth else 0}"]')
+    await p.keyboard.press('ArrowRight')
+    await c.shot('e02-sprint')
+    await p.evaluate("D.sp.end = now()"); await p.wait_for_selector('.drill-score')
+    assert re.match(r'\d+ из 7', await p.inner_text('.drill-score'))
+    assert await p.evaluate("dayTotals(today()).ex") == 2
+    await c.check()
+
+async def e03_text_drills(c):
+    """Пропуски в абзаце, найди в тексте, собери предложение, на слух, диктант."""
+    c.data = True; c.init_script = SPEECH_MOCK; p = await c.open()
+    await import_book(p, 'sample.fb2'); await p.evaluate(SEED_PL)
+    await p.click('[data-a="tab"][data-id="ex"]')
+    await p.click('[data-a="dr-start"][data-id="gaps"]'); await p.wait_for_selector('.gap-slot')
+    await c.shot('e03-gaps')
+    # неверное заполнение: слова в обратном порядке
+    await p.evaluate("(()=>{const it=D.items[0];D.st.fill=it.answers.map((a,i)=>it.bank.indexOf(it.answers[it.answers.length-1-i]));paintDrill()})()")
+    await p.click('[data-a="dr-check"]'); await p.wait_for_selector('.gap-slot.wrong'); await c.shot('e03-gaps-checked')
+    await p.click('[data-a="dr-next"]')
+    for _ in range(await p.evaluate("D.items.length") - 1): await solve_item(p)
+    await p.wait_for_selector('.drill-score'); await p.click('[data-a="dr-close"]'); await p.wait_for_selector('.drill', state='detached')
+    await run_drill(p, 'find'); await p.click('[data-a="dr-close"]')
+    await run_drill(p, 'order'); await p.click('[data-a="dr-close"]')
+    sc = await run_drill(p, 'listen'); assert len(await p.evaluate('__spoken')) >= 3
+    await p.click('[data-a="dr-close"]')
+    await run_drill(p, 'dictation'); await c.shot('e03-dictation-summary'); await p.click('[data-a="dr-close"]')
+    await c.check()
+
+async def e04_polish_grammar(c):
+    """Падежи (формы из Викисловаря) и предлоги с падежами."""
+    c.data = True; p = await c.open(); await p.route('https://en.wiktionary.org/**', wikt_html)
+    await import_book(p, 'sample.fb2'); await p.evaluate(SEED_PL)
+    await p.click('[data-a="tab"][data-id="ex"]')
+    await p.click('[data-a="dr-start"][data-id="cases"]'); await p.wait_for_function("D && !D.busy")
+    assert not await p.evaluate("D.err||''"), await p.evaluate("D.err")
+    assert 'mgł' in await p.inner_text('.drill-card'); await c.shot('e04-cases')
+    a = await p.evaluate("D.items[0].a"); await p.click(f'[data-a="dr-pick"][data-id="{a}"]')
+    ex = await p.inner_text('.drill-ex'); assert 'винительный' in ex, ex
+    await p.click('[data-a="dr-next"]'); await p.wait_for_selector('.drill-score'); await p.click('[data-a="dr-close"]')
+    await p.click('[data-a="dr-start"][data-id="preps"]'); await p.wait_for_function("D && !D.busy")
+    items = await p.evaluate("D.items.map(x=>x.ex)"); assert any('przez' in x for x in items), items
+    await c.shot('e04-preps')
+    wrong = await p.evaluate("(D.items[0].a+1)%4"); await p.click(f'[data-a="dr-pick"][data-id="{wrong}"]'); await p.wait_for_selector('.choice.wrong')
+    await p.click('[data-a="dr-next"]')
+    for _ in range(await p.evaluate("D.items.length") - 1): await solve_item(p)
+    sc = await p.inner_text('.drill-score'); assert sc.startswith('7 из 8'), sc
+    await c.check()
+
+async def e05_english_irregular(c):
+    """Неправильные глаголы из книг: ввод двух форм, «Не знаю»."""
+    c.data = True; p = await c.open()
+    await import_book(p, 'sample.epub')
+    await p.click('[data-a="tab"][data-id="ex"]'); await p.click('[data-a="dr-start"][data-id="irregular"]'); await p.wait_for_function("D && !D.busy")
+    bases = await p.evaluate("D.items.map(x=>x.q)"); assert any('>wind<' in b for b in bases) and any('>feel<' in b for b in bases), bases
+    await p.fill('input[name="a0"]', await p.evaluate("D.items[0].fields[0].ans[0]")); await p.fill('input[name="a1"]', 'wrong')
+    await c.shot('e05-irregular'); await p.click('form[data-form="dr-input"] button[type=submit]'); await p.wait_for_selector('.drill-ans s')
+    await p.click('[data-a="dr-next"]'); await p.click('[data-a="dr-skip"]'); await p.click('[data-a="dr-next"]')
+    for _ in range(6): await solve_item(p)
+    assert (await p.inner_text('.drill-score')).startswith('6 из 8')
+    await c.check()
+
+async def e06_chinese(c):
+    """Пиньинь ↔ иероглиф, собери слово, счётные слова; тоны и порядок черт из раздела."""
+    c.data = True; c.init_script = SPEECH_MOCK; p = await c.open()
+    await import_book(p, 'sample-zh.txt')
+    await p.click('[data-a="tab"][data-id="ex"]'); t = await p.inner_text('.ex-grid')
+    assert all(x in t for x in ['Пиньинь', 'Собери слово', 'Счётные слова', 'Тоны на слух', 'Порядок черт']), t
+    await run_drill(p, 'pinyin'); await c.shot('e06-pinyin-summary'); await p.click('[data-a="dr-close"]')
+    await p.click('[data-a="dr-start"][data-id="compose"]'); await p.wait_for_function("D && !D.busy"); await c.shot('e06-compose')
+    for _ in range(await p.evaluate("D.items.length")): await solve_item(p)
+    await p.click('[data-a="dr-close"]')
+    await p.click('[data-a="dr-start"][data-id="measure"]'); await p.wait_for_function("D && !D.busy")
+    assert not await p.evaluate("D.err||''"), await p.evaluate("D.err")
+    await c.shot('e06-measure')
+    for _ in range(await p.evaluate("D.items.length")): await solve_item(p)
+    await p.click('[data-a="dr-close"]'); await p.wait_for_selector('.drill', state='detached')
+    await p.click('[data-a="dr-start"][data-id="tones"]'); await p.wait_for_selector('[data-a="tone-pick"]'); await close_sheet(p)
+    await p.click('[data-a="dr-start"][data-id="strokes"]'); await p.wait_for_selector('#hw-box svg path', state='attached')
+    await c.check()
+
+async def e07_daily(c):
+    """Тренировка дня: четыре упражнения подряд, отметка в разделе и дневнике."""
+    c.data = True; c.init_script = SPEECH_MOCK; p = await c.open(); await p.route('https://en.wiktionary.org/**', wikt_html)
+    await import_book(p, 'sample.fb2'); await p.evaluate(SEED_PL)
+    await p.click('[data-a="tab"][data-id="ex"]'); await p.click('[data-a="dr-daily"]'); await p.wait_for_function("D && !D.busy")
+    assert await p.evaluate("D.queue") == ['pairs', 'gaps', 'preps', 'cases'], await p.evaluate("D.queue")
+    await c.shot('e07-daily-1')
+    for step in range(4):
+        await p.wait_for_function("D && !D.busy")
+        if not await p.evaluate("D.err||''"):
+            for _ in range(await p.evaluate("D.items.length")): await solve_item(p)
+        if step < 3: await p.click('[data-a="dr-step"]')
+    await p.wait_for_selector('text=Тренировка дня выполнена'); await c.shot('e07-daily-done')
+    await p.click('[data-a="dr-close"]'); await p.wait_for_selector('.drill', state='detached')
+    assert await p.evaluate("dayTotals(today()).drill") == 1
+    assert '✓ Ещё раз' in await p.inner_text('.daily')
+    await p.click('[data-a="tab"][data-id="diary"]'); assert 'тренировка дня ✓' in await p.inner_text('main')
+    await c.check()
+
+async def e08_chapter_gaps(c):
+    """Из итога главы: пропуски в абзацах этой главы поверх читалки, возврат к чтению."""
+    c.data = True; p = await c.open()
+    await xopen(p, 'sample.epub'); await to_chapter_end(p)
+    await p.click('[data-a="dr-chapter"]'); await p.wait_for_function("D && !D.busy")
+    assert await p.evaluate("D.opt.ch") == 0 and await p.evaluate("D.items.length") >= 1
+    srcs = await p.evaluate("D.items.map(x=>x.toks.map(t=>t.t).join(''))"); ch0 = await p.evaluate("R.c.chapters[0].p")
+    assert all(s in ch0 for s in srcs)
+    await p.keyboard.press('Escape'); await p.wait_for_selector('.drill', state='detached')
+    assert await p.locator('.reader').count() == 1
+    await c.check()
+
+EXTRAS_CASES = [e01_hub_no_claude, e02_pairs_sprint, e03_text_drills, e04_polish_grammar, e05_english_irregular, e06_chinese, e07_daily, e08_chapter_gaps, p01_pdf, g01_auth_first, x01_freq_levels, x02_cedict, x03_more_in_book, x04_paragraph, x05_quotes_bookmarks, x06_rich_text, x07_search_spread,
                 x08_new_cards, x09_say_after, x10_mini_review, x11_hanzi, x12_tones, x13_pl_table, x14_goals_year, x15_merge, x16_offline_data]
